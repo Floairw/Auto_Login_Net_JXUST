@@ -116,7 +116,7 @@ class Program
 
         // 首先检测网络环境是否需要认证
         bool requiresAuthNormal = await CheckNetworkAuthenticationRequired();
-        if (!requiresAuthNormal)
+        if (requiresAuthNormal)
         {
             Console.WriteLine("当前网络环境无需认证");
 
@@ -125,33 +125,8 @@ class Program
             {
                 Console.WriteLine($"检测到保存的凭据: {savedCredentials.Username}");
                 Console.WriteLine($"保存时间: {savedCredentials.SaveDate}");
-
-                // 显示凭据管理菜单
-                ShowCredentialsManagementMenu(ref savedCredentials);
-            }
-            else
-            {
-                Console.WriteLine("按任意键退出...");
-                Console.ReadKey();
-            }
-            return;
-        }
-
-        // 如果检测到保存的凭据，提供凭据管理选项
-        if (savedCredentials != null)
-        {
-            Console.WriteLine($"检测到保存的凭据: {savedCredentials.Username}");
-            Console.WriteLine($"保存时间: {savedCredentials.SaveDate}");
-
-            // 显示凭据管理菜单
-            ShowCredentialsManagementMenu(ref savedCredentials);
-
-            // 如果凭据未被清空，询问是否使用
-            if (savedCredentials != null)
-            {
                 Console.Write("是否使用保存的凭据自动登录? (y/n, 默认n): ");
                 string? response = Console.ReadLine();
-
                 if (!string.IsNullOrEmpty(response) && response.ToLower() == "y")
                 {
                     username = savedCredentials.Username;
@@ -160,8 +135,18 @@ class Program
                     autoLogin = true;
                     Console.WriteLine("使用保存的凭据自动登录...");
                 }
+                // 显示综合管理菜单
+                ShowComprehensiveManagementMenu();
             }
         }
+        else
+        {
+            Console.WriteLine("按任意键退出...");
+            Console.ReadKey();
+            return;
+        }
+            
+
 
         // 如果没有自动登录，获取用户输入
         if (!autoLogin)
@@ -310,42 +295,6 @@ class Program
         catch
         {
             // 忽略日志写入错误
-        }
-    }
-
-    // 显示凭据管理菜单
-    static void ShowCredentialsManagementMenu(ref SavedCredentials? savedCredentials)
-    {
-        if (savedCredentials == null)
-        {
-            Console.WriteLine("没有保存的凭据可管理。");
-            return;
-        }
-
-        while (true)
-        {
-            Console.WriteLine("\n凭据管理");
-            Console.WriteLine("========");
-            Console.WriteLine("1. 清空保存的凭据");
-            Console.WriteLine("2. 返回主菜单");
-            Console.Write("请选择: ");
-
-            string? choice = Console.ReadLine();
-
-            switch (choice)
-            {
-                case "1":
-                    ClearCredentials();
-                    Console.WriteLine("凭据已清空");
-                    savedCredentials = null; // 设置引用为null，表示凭据已被清空
-                    return;
-                case "2":
-                    ShowComprehensiveManagementMenu();
-                    return;
-                default:
-                    Console.WriteLine("无效选择");
-                    break;
-            }
         }
     }
 
@@ -505,7 +454,7 @@ class Program
             bool externalNetworkReachable = await PingHostWithTimeout("baidu.com", 5000);
 
             Console.WriteLine($"校园网认证服务器响应: {campusNetworkResponds}");
-            Console.WriteLine($"外部网络可达: {externalNetworkReachable}");
+            Console.WriteLine($"外部网络连通性: {externalNetworkReachable}");
 
             // 如果校园网认证服务器响应但外部网络不可达，则需要登录
             if (campusNetworkResponds && !externalNetworkReachable)
@@ -519,9 +468,14 @@ class Program
                 Console.WriteLine("校园网认证服务器响应，外部网络可达，账号已登录");
                 return false;
             }
+            else if(externalNetworkReachable)
+            {
+                Console.WriteLine("非校园网环境，外部网络可达，无需登录");
+                return false;
+            }
             else
             {
-                Console.WriteLine("网络环境正常，无需认证");
+                Console.WriteLine("网络环境异常");
                 return false;
             }
         }
