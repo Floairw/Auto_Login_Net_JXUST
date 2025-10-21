@@ -1,9 +1,16 @@
-﻿using Microsoft.Win32;
-using System.Diagnostics;
+﻿using System;
+using System.IO;
+using System.Net.Http;
+using System.Threading.Tasks;
+using System.Text.Json;
+using System.Net;
 using System.Net.NetworkInformation;
+using Microsoft.Win32;
+using System.Linq;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
 
 class Program
 {
@@ -18,9 +25,6 @@ class Program
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "NetworkAuthenticator",
         "autologin.log");
-
-    // 使用更安全的密钥（32字节）
-    private static readonly byte[] EncryptionKey = Encoding.UTF8.GetBytes("MySuperSecretKey1234567890123456"); // 32 bytes
 
     static async Task Main(string[] args)
     {
@@ -484,11 +488,11 @@ class Program
                 Console.WriteLine("检测到网络需要认证：校园网认证服务器响应但外部网络不可达");
                 return true;
             }
-            // 如果校园网认证服务器响应，即使外部网络可达，也可能需要认证（某些网络环境）
+            // 如果校园网认证服务器响应，外部网络可达，说明账号已经登录，无需要认证
             else if (campusNetworkResponds)
             {
-                Console.WriteLine("检测到校园网环境，建议进行认证");
-                return true;
+                Console.WriteLine("检测到校园网认证服务器响应，外部网络可达，账号已经登录");
+                return false;
             }
             else
             {
@@ -625,8 +629,8 @@ class Program
                 Directory.CreateDirectory(configDir);
             }
 
-            // 加密密码
-            string encryptedPassword = EncryptString(password);
+            // 使用DPAPI加密密码
+            string encryptedPassword = EncryptWithDPAPI(password);
 
             // 创建凭据对象
             var credentials = new SavedCredentials
@@ -670,8 +674,17 @@ class Program
                 return null;
             }
 
-            // 解密密码
-            credentials.Password = DecryptString(credentials.Password);
+            // 使用DPAPI解密密码
+            try
+            {
+                credentials.Password = DecryptWithDPAPI(credentials.Password);
+            }
+            catch (CryptographicException ex)
+            {
+                Console.WriteLine($"解密密码失败: {ex.Message}");
+                LogMessage($"解密密码失败: {ex.Message}");
+                return null; // 解密失败，视为无效凭据
+            }
 
             return credentials;
         }
@@ -734,93 +747,55 @@ class Program
         return password;
     }
 
-    // 加密字符串
-    static string EncryptString(string plainText)
+    // 使用Windows数据保护API (DPAPI) 加密字符串
+    static string EncryptWithDPAPI(string plainText)
     {
         try
         {
-            using (Aes aesAlg = Aes.Create())
-            {
-                aesAlg.Key = EncryptionKey;
-                aesAlg.GenerateIV();
+            // 将字符串转换为字节数组
+            byte[] plainBytes = Encoding.UTF8.GetBytes(plainText);
 
-                ICryptoTransform encryptor = aesAlg.CreateEncryptor(aesAlg.Key, aesAlg.IV);
+            // 使用DPAPI加密数据，使用当前用户范围
+            byte[] encryptedBytes = ProtectedData.Protect(plainBytes, null, DataProtectionScope.CurrentUser);
 
-                using (MemoryStream msEncrypt = new MemoryStream())
-                {
-                    // 先写入IV
-                    msEncrypt.Write(aesAlg.IV, 0, aesAlg.IV.Length);
-
-                    using (CryptoStream csEncrypt = new CryptoStream(msEncrypt, encryptor, CryptoStreamMode.Write))
-                    using (StreamWriter swEncrypt = new StreamWriter(csEncrypt))
-                    {
-                        swEncrypt.Write(plainText);
-                    }
-
-                    return Convert.ToBase64String(msEncrypt.ToArray());
-                }
-            }
+            // 将加密后的字节数组转换为Base64字符串
+            return Convert.ToBase64String(encryptedBytes);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"加密失败: {ex.Message}");
-            return plainText; // 如果加密失败，返回原始文本
+            Console.WriteLine($"DPAPI加密失败: {ex.Message}");
+            throw new CryptographicException("加密失败", ex);
         }
     }
 
-    // 解密字符串
-    static string DecryptString(string cipherText)
+    // 使用Windows数据保护API (DPAPI) 解密字符串
+    static string DecryptWithDPAPI(string encryptedText)
     {
         try
         {
-            // 如果文本不是Base64格式，直接返回（可能是旧版本未加密的密码）
-            if (string.IsNullOrEmpty(cipherText) || !IsBase64String(cipherText))
-            {
-                return cipherText;
-            }
+            // 将Base64字符串转换为字节数组
+            byte[] encryptedBytes = Convert.FromBase64String(encryptedText);
 
-            byte[] buffer = Convert.FromBase64String(cipherText);
+            // 使用DPAPI解密数据，使用当前用户范围
+            byte[] plainBytes = ProtectedData.Unprotect(encryptedBytes, null, DataProtectionScope.CurrentUser);
 
-            using (Aes aesAlg = Aes.Create())
-            {
-                aesAlg.Key = EncryptionKey;
-
-                // 从密文开头读取IV
-                byte[] iv = new byte[16];
-                Array.Copy(buffer, 0, iv, 0, 16);
-                aesAlg.IV = iv;
-
-                ICryptoTransform decryptor = aesAlg.CreateDecryptor(aesAlg.Key, aesAlg.IV);
-
-                using (MemoryStream msDecrypt = new MemoryStream(buffer, 16, buffer.Length - 16))
-                using (CryptoStream csDecrypt = new CryptoStream(msDecrypt, decryptor, CryptoStreamMode.Read))
-                using (StreamReader srDecrypt = new StreamReader(csDecrypt))
-                {
-                    return srDecrypt.ReadToEnd();
-                }
-            }
+            // 将解密后的字节数组转换为字符串
+            return Encoding.UTF8.GetString(plainBytes);
         }
-        catch
+        catch (FormatException)
         {
-            // 如果解密失败（例如由于密钥更改），返回原始文本
-            return cipherText;
+            Console.WriteLine("解密失败: 无效的Base64格式");
+            throw new CryptographicException("解密失败: 无效的Base64格式");
         }
-    }
-
-    // 检查字符串是否为Base64格式
-    static bool IsBase64String(string base64)
-    {
-        if (string.IsNullOrEmpty(base64) || base64.Length % 4 != 0)
-            return false;
-
-        try
+        catch (CryptographicException ex)
         {
-            Convert.FromBase64String(base64);
-            return true;
+            Console.WriteLine($"DPAPI解密失败: {ex.Message}");
+            throw new CryptographicException("解密失败: 可能是数据损坏或在不同用户/计算机上解密", ex);
         }
-        catch
+        catch (Exception ex)
         {
-            return false;
+            Console.WriteLine($"解密失败: {ex.Message}");
+            throw new CryptographicException("解密失败", ex);
         }
     }
 }

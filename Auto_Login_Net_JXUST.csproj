@@ -12,4 +12,8 @@
     <Content Include="iocn.ico" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.10" />
+  </ItemGroup>
+
 </Project>
