@@ -17,13 +17,13 @@ class Program
     // 配置文件路径
     private static readonly string ConfigFilePath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "NetworkAuthenticator",
+        "AutologinForDrcom",
         "config.json");
 
     // 日志文件路径
     private static readonly string LogFilePath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "NetworkAuthenticator",
+        "AutologinForDrcom",
         "autologin.log");
 
     static async Task Main(string[] args)
@@ -107,11 +107,11 @@ class Program
     }
 
     // 正常启动流程
-    static async Task NormalStartProcess(SavedCredentials savedCredentials)
+    static async Task NormalStartProcess(SavedCredentials? savedCredentials)
     {
-        string username = null;
-        string password = null;
-        string choice = null;
+        string? username = null;
+        string? password = null;
+        string? choice = null;
         bool autoLogin = false;
 
         // 首先检测网络环境是否需要认证
@@ -150,7 +150,7 @@ class Program
             if (savedCredentials != null)
             {
                 Console.Write("是否使用保存的凭据自动登录? (y/n, 默认n): ");
-                string response = Console.ReadLine();
+                string? response = Console.ReadLine();
 
                 if (!string.IsNullOrEmpty(response) && response.ToLower() == "y")
                 {
@@ -179,7 +179,7 @@ class Program
             Console.WriteLine("4. 校园网");
             Console.Write("请输入数字选择: ");
 
-            string choiceInput = Console.ReadLine();
+            string? choiceInput = Console.ReadLine();
 
             switch (choiceInput)
             {
@@ -216,7 +216,7 @@ class Program
 
             // 询问是否保存凭据
             Console.Write("是否保存凭据以便下次自动登录? (y/n): ");
-            string saveResponse = Console.ReadLine();
+            string? saveResponse = Console.ReadLine();
 
             if (saveResponse?.ToLower() == "y")
             {
@@ -225,7 +225,7 @@ class Program
 
                 // 询问是否设置开机自启
                 Console.Write("是否设置开机自启? (y/n): ");
-                string autoStartResponse = Console.ReadLine();
+                string? autoStartResponse = Console.ReadLine();
 
                 if (autoStartResponse?.ToLower() == "y")
                 {
@@ -236,8 +236,11 @@ class Program
         }
 
         // 执行登录并显示响应
-        string responseContent = await Login(username, password, choice);
-        Console.WriteLine($"服务器响应: {responseContent}");
+        if (username != null && password != null && choice != null)
+        {
+            string responseContent = await Login(username, password, choice);
+            Console.WriteLine($"服务器响应: {responseContent}");
+        }
 
         // 显示综合管理菜单（凭据和开机自启）
         ShowComprehensiveManagementMenu();
@@ -287,7 +290,15 @@ class Program
     {
         try
         {
-            string logDir = Path.GetDirectoryName(LogFilePath);
+            string? logDir = Path.GetDirectoryName(LogFilePath);
+
+            // 添加 null 检查
+            if (string.IsNullOrEmpty(logDir))
+            {
+                // 如果无法获取目录，使用临时目录作为备用
+                logDir = Path.Combine(Path.GetTempPath(), "AutologinForDrcom");
+            }
+
             if (!Directory.Exists(logDir))
             {
                 Directory.CreateDirectory(logDir);
@@ -303,8 +314,14 @@ class Program
     }
 
     // 显示凭据管理菜单
-    static void ShowCredentialsManagementMenu(ref SavedCredentials savedCredentials)
+    static void ShowCredentialsManagementMenu(ref SavedCredentials? savedCredentials)
     {
+        if (savedCredentials == null)
+        {
+            Console.WriteLine("没有保存的凭据可管理。");
+            return;
+        }
+
         while (true)
         {
             Console.WriteLine("\n凭据管理");
@@ -313,7 +330,7 @@ class Program
             Console.WriteLine("2. 返回主菜单");
             Console.Write("请选择: ");
 
-            string choice = Console.ReadLine();
+            string? choice = Console.ReadLine();
 
             switch (choice)
             {
@@ -323,6 +340,7 @@ class Program
                     savedCredentials = null; // 设置引用为null，表示凭据已被清空
                     return;
                 case "2":
+                    ShowComprehensiveManagementMenu();
                     return;
                 default:
                     Console.WriteLine("无效选择");
@@ -358,10 +376,10 @@ class Program
             Console.WriteLine("1. 清空保存的凭据");
             Console.WriteLine("2. 设置开机自启");
             Console.WriteLine("3. 取消开机自启");
-            Console.WriteLine("4. 返回主菜单");
+            Console.WriteLine("4. 退出");
             Console.Write("请选择: ");
 
-            string choice = Console.ReadLine();
+            string? choice = Console.ReadLine();
 
             switch (choice)
             {
@@ -401,10 +419,10 @@ class Program
     {
         try
         {
-            string appName = "NetworkAuthenticator";
+            string appName = "AutologinForDrcom";
             string runKey = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
 
-            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(runKey, true))
+            using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(runKey, true))
             {
                 if (key == null)
                 {
@@ -415,7 +433,14 @@ class Program
                 if (enable)
                 {
                     // 获取当前程序的路径
-                    string exePath = Process.GetCurrentProcess().MainModule.FileName;
+                    string? exePath = Process.GetCurrentProcess().MainModule?.FileName ??
+                                    System.Reflection.Assembly.GetExecutingAssembly().Location;
+
+                    if (string.IsNullOrEmpty(exePath))
+                    {
+                        Console.WriteLine("无法获取程序路径");
+                        return;
+                    }
 
                     // 添加开机启动项
                     key.SetValue(appName, $"\"{exePath}\" --autostart");
@@ -450,10 +475,10 @@ class Program
     {
         try
         {
-            string appName = "NetworkAuthenticator";
+            string appName = "AutologinForDrcom";
             string runKey = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
 
-            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(runKey, false))
+            using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(runKey, false))
             {
                 if (key == null) return false;
 
@@ -488,10 +513,10 @@ class Program
                 Console.WriteLine("检测到网络需要认证：校园网认证服务器响应但外部网络不可达");
                 return true;
             }
-            // 如果校园网认证服务器响应，外部网络可达，说明账号已经登录，无需要认证
+            // 如果校园网认证服务器响应，外部网络可达，无需要认证（账号已登录）
             else if (campusNetworkResponds)
             {
-                Console.WriteLine("检测到校园网认证服务器响应，外部网络可达，账号已经登录");
+                Console.WriteLine("校园网认证服务器响应，外部网络可达，账号已登录");
                 return false;
             }
             else
@@ -623,7 +648,14 @@ class Program
         try
         {
             // 确保目录存在
-            string configDir = Path.GetDirectoryName(ConfigFilePath);
+            string? configDir = Path.GetDirectoryName(ConfigFilePath);
+
+            // 添加 null 检查
+            if (string.IsNullOrEmpty(configDir))
+            {
+                configDir = Path.Combine(Path.GetTempPath(), "AutologinForDrcom");
+            }
+
             if (!Directory.Exists(configDir))
             {
                 Directory.CreateDirectory(configDir);
@@ -655,7 +687,7 @@ class Program
     }
 
     // 从文件加载凭据
-    static SavedCredentials LoadCredentials()
+    static SavedCredentials? LoadCredentials()
     {
         try
         {
@@ -803,8 +835,8 @@ class Program
 // 保存的凭据类
 public class SavedCredentials
 {
-    public string Username { get; set; }
-    public string Password { get; set; }
-    public string Choice { get; set; }
+    public string Username { get; set; } = "";
+    public string Password { get; set; } = "";
+    public string Choice { get; set; } = "";
     public DateTime SaveDate { get; set; }
 }
