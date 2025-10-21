@@ -1,0 +1,29 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36603.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Auto_Login_Net_JXUST", "Auto_Login_Net_JXUST.csproj", "{94226E60-7372-4F20-A5E7-A3CDEAD1CE68}"
+EndProject
+Project("{54435603-DBB4-11D2-8724-00A0C9A8B90C}") = "Auto_Login_Net", "..\Auto_Login_Net\Auto_Login_Net.vdproj", "{07BA62A3-6073-0AE8-AB2B-5984B5743579}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{94226E60-7372-4F20-A5E7-A3CDEAD1CE68}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{94226E60-7372-4F20-A5E7-A3CDEAD1CE68}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{94226E60-7372-4F20-A5E7-A3CDEAD1CE68}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{94226E60-7372-4F20-A5E7-A3CDEAD1CE68}.Release|Any CPU.Build.0 = Release|Any CPU
+		{07BA62A3-6073-0AE8-AB2B-5984B5743579}.Debug|Any CPU.ActiveCfg = Debug
+		{07BA62A3-6073-0AE8-AB2B-5984B5743579}.Release|Any CPU.ActiveCfg = Release
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {15D9BF67-C55D-4F81-B118-1BA88B665FEB}
+	EndGlobalSection
+EndGlobal
