@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>AutoLoginNet</RootNamespace>
+    <AssemblyName>AutoLoginNet.Core</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 单元测试需要访问 internal 的解析辅助方法（例如 netsh 输出解析） -->
+    <InternalsVisibleTo Include="AutoLoginNet.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,83 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="AutoLoginNet.App.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:Microsoft.UI.Xaml.Controls"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <Grid x:Name="RootGrid">
+        <controls:NavigationView
+            x:Name="Nav"
+            IsBackButtonVisible="Collapsed"
+            IsSettingsVisible="False"
+            PaneDisplayMode="Left"
+            OpenPaneLength="248"
+            IsPaneToggleButtonVisible="True"
+            SelectionChanged="Nav_SelectionChanged">
+
+            <controls:NavigationView.PaneHeader>
+                <StackPanel Orientation="Horizontal" Margin="4,8,0,12" Spacing="12">
+                    <Border
+                        Width="36"
+                        Height="36"
+                        CornerRadius="8"
+                        Background="{ThemeResource AccentFillColorDefaultBrush}">
+                        <FontIcon
+                            Glyph="&#xE839;"
+                            FontSize="18"
+                            Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
+                    </Border>
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock Text="校园网认证客户端" FontWeight="SemiBold" />
+                        <TextBlock
+                            x:Name="PaneStatusText"
+                            Text="正在检测网络…"
+                            FontSize="11"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
+                </StackPanel>
+            </controls:NavigationView.PaneHeader>
+
+            <controls:NavigationView.MenuItems>
+                <controls:NavigationViewItem Content="首页" Tag="dashboard">
+                    <controls:NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE80F;" />
+                    </controls:NavigationViewItem.Icon>
+                </controls:NavigationViewItem>
+
+                <controls:NavigationViewItem Content="网络工具" Tag="network">
+                    <controls:NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE968;" />
+                    </controls:NavigationViewItem.Icon>
+                </controls:NavigationViewItem>
+
+                <controls:NavigationViewItem Content="运行日志" Tag="logs">
+                    <controls:NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE9D9;" />
+                    </controls:NavigationViewItem.Icon>
+                </controls:NavigationViewItem>
+            </controls:NavigationView.MenuItems>
+
+            <controls:NavigationView.FooterMenuItems>
+                <controls:NavigationViewItem Content="设置" Tag="settings">
+                    <controls:NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE713;" />
+                    </controls:NavigationViewItem.Icon>
+                </controls:NavigationViewItem>
+            </controls:NavigationView.FooterMenuItems>
+
+            <Frame x:Name="ContentFrame" />
+        </controls:NavigationView>
+
+        <!-- 后台操作进行中的全局提示条 -->
+        <ProgressBar
+            x:Name="BusyBar"
+            IsIndeterminate="True"
+            VerticalAlignment="Top"
+            Height="3"
+            Visibility="Collapsed" />
+    </Grid>
+</Window>

@@ -1,0 +1,324 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="AutoLoginNet.App.Pages.NetworkPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:Microsoft.UI.Xaml.Controls"
+    xmlns:ui="using:AutoLoginNet.App.UiSupport"
+    xmlns:vm="using:AutoLoginNet.App.ViewModels"
+    xmlns:net="using:AutoLoginNet.Network"
+    xmlns:hosts="using:AutoLoginNet.Hosts"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <Page.Resources>
+        <ui:BooleanToVisibilityConverter x:Key="BoolToVis" />
+    </Page.Resources>
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <Grid Margin="32,24,32,32" MaxWidth="1080" HorizontalAlignment="Stretch">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <StackPanel Grid.Row="0" Spacing="4" Margin="0,0,0,20">
+                <TextBlock Text="网络工具" Style="{StaticResource PageTitleTextStyle}" />
+                <TextBlock
+                    Text="优化 DNS、诊断连通性、快速测速"
+                    Style="{StaticResource PageSubtitleTextStyle}" />
+            </StackPanel>
+
+            <!-- DNS 优选 -->
+            <Border Grid.Row="1" Style="{StaticResource AppCardStyle}" Margin="0,0,0,16">
+                <StackPanel Spacing="14">
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="DNS 优选" Style="{StaticResource SectionTitleTextStyle}" />
+                        <TextBlock
+                            Text="测试各公共 DNS 的实际延迟，自动选出延迟最低的首选与备选。只会修改当前上网所用的网卡，不会动虚拟网卡。"
+                            Style="{StaticResource CaptionTextStyle}" />
+                    </StackPanel>
+
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <Border
+                            Grid.Column="0"
+                            Background="{ThemeResource LayerFillColorDefaultBrush}"
+                            CornerRadius="6"
+                            Padding="14">
+                            <StackPanel Spacing="4">
+                                <TextBlock Text="当前网卡" Style="{StaticResource CaptionTextStyle}" />
+                                <TextBlock
+                                    Text="{x:Bind ViewModel.AdapterText, Mode=OneWay}"
+                                    FontSize="13"
+                                    TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border
+                            Grid.Column="1"
+                            Background="{ThemeResource LayerFillColorDefaultBrush}"
+                            CornerRadius="6"
+                            Padding="14">
+                            <StackPanel Spacing="4">
+                                <TextBlock Text="当前 DNS" Style="{StaticResource CaptionTextStyle}" />
+                                <TextBlock
+                                    Text="{x:Bind ViewModel.CurrentDnsText, Mode=OneWay}"
+                                    FontSize="13"
+                                    TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+
+                    <ItemsControl ItemsSource="{x:Bind ViewModel.DnsCandidates}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="net:DnsCandidateEntry">
+                                <Grid Margin="0,4" ColumnSpacing="12" Padding="0,6" BorderThickness="0,0,0,1"
+                                      BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="132" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="104" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <!-- 提供商 -->
+                                    <TextBlock
+                                        Grid.Column="0"
+                                        Text="{x:Bind Name}"
+                                        FontWeight="SemiBold"
+                                        VerticalAlignment="Center"
+                                        TextTrimming="CharacterEllipsis" />
+
+                                    <!-- 首选地址与其解析延迟 -->
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                        <TextBlock
+                                            Text="{x:Bind Primary.Address}"
+                                            FontSize="13"
+                                            TextTrimming="CharacterEllipsis" />
+                                        <TextBlock
+                                            Text="{x:Bind Primary.LatencyText, Mode=OneWay}"
+                                            FontSize="12"
+                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    </StackPanel>
+
+                                    <!-- 备选地址与其解析延迟 -->
+                                    <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                                        <TextBlock
+                                            Text="{x:Bind Backup.Address}"
+                                            FontSize="13"
+                                            TextTrimming="CharacterEllipsis" />
+                                        <TextBlock
+                                            Text="{x:Bind Backup.LatencyText, Mode=OneWay}"
+                                            FontSize="12"
+                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    </StackPanel>
+
+                                    <!-- 推荐角色：首选 / 备选 -->
+                                    <StackPanel
+                                        Grid.Column="3"
+                                        Orientation="Horizontal"
+                                        Spacing="6"
+                                        HorizontalAlignment="Right"
+                                        VerticalAlignment="Center">
+                                        <Border
+                                            Style="{StaticResource StatusPillStyle}"
+                                            Background="{ThemeResource AccentFillColorDefaultBrush}"
+                                            Visibility="{x:Bind Primary.IsChosen, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                                            <TextBlock
+                                                Text="{x:Bind Primary.Rank, Mode=OneWay}"
+                                                FontSize="11"
+                                                Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
+                                        </Border>
+                                        <Border
+                                            Style="{StaticResource StatusPillStyle}"
+                                            Background="{ThemeResource SystemFillColorSuccessBrush}"
+                                            Visibility="{x:Bind Backup.IsChosen, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                                            <TextBlock
+                                                Text="{x:Bind Backup.Rank, Mode=OneWay}"
+                                                FontSize="11"
+                                                Foreground="White" />
+                                        </Border>
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <ProgressBar
+                        IsIndeterminate="True"
+                        Visibility="{x:Bind ViewModel.IsMeasuring, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <Button
+                            Content="测试全部"
+                            Style="{StaticResource AccentButtonStyle}"
+                            Click="Measure_Click"
+                                IsEnabled="{x:Bind ViewModel.CanMeasure, Mode=OneWay}" />
+                        <Button
+                            Content="应用推荐 DNS"
+                            Click="ApplyDns_Click"
+                                IsEnabled="{x:Bind ViewModel.CanApply, Mode=OneWay}" />
+                        <Button
+                            Content="改为自动获取"
+                            Click="Automatic_Click"
+                                IsEnabled="{x:Bind ViewModel.CanApply, Mode=OneWay}" />
+                    </StackPanel>
+
+                    <InfoBar
+                        IsOpen="True"
+                        IsClosable="False"
+                        Severity="Informational"
+                        Message="{x:Bind ViewModel.DnsStatus, Mode=OneWay}" />
+
+                    <TextBlock
+                        Text="应用 DNS 需要管理员权限，会自动弹出 UAC 授权窗口。"
+                        Style="{StaticResource CaptionTextStyle}" />
+                </StackPanel>
+            </Border>
+
+
+            <!-- 校内域名解析（hosts） -->
+            <Border Grid.Row="2" Style="{StaticResource AppCardStyle}" Margin="0,0,0,16">
+                <StackPanel Spacing="14">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Column="0" Spacing="4">
+                            <TextBlock Text="校内域名解析（hosts）" Style="{StaticResource SectionTitleTextStyle}" />
+                            <TextBlock
+                                Text="把校内站点固定解析到内网地址。改用公共 DNS 后仍能正常访问教务、办事大厅、校园卡等系统。"
+                                Style="{StaticResource CaptionTextStyle}" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Top">
+                            <TextBlock
+                                Text="{x:Bind ViewModel.HostsStateText, Mode=OneWay}"
+                                Style="{StaticResource CaptionTextStyle}"
+                                VerticalAlignment="Center" />
+                            <ToggleSwitch
+                                x:Name="HostsToggle"
+                                OnContent="已开启"
+                                OffContent="已关闭"
+                                IsOn="{x:Bind ViewModel.HostsIsOn, Mode=OneWay}"
+                                Toggled="HostsToggle_Toggled" />
+                        </StackPanel>
+                    </Grid>
+
+                    <ItemsControl ItemsSource="{x:Bind ViewModel.HostsEntries}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="hosts:HostsEntry">
+                                <Grid ColumnSpacing="12" Margin="0,2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="240" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock
+                                        Grid.Column="0"
+                                        Text="{x:Bind IpAddress}"
+                                        FontFamily="Consolas"
+                                        FontSize="12"
+                                        TextTrimming="CharacterEllipsis" />
+                                    <TextBlock
+                                        Grid.Column="1"
+                                        Text="{x:Bind DisplayText}"
+                                        FontSize="12"
+                                        TextTrimming="CharacterEllipsis"
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <InfoBar
+                        IsOpen="True"
+                        IsClosable="False"
+                        Severity="Informational"
+                        Message="{x:Bind ViewModel.HostsStatus, Mode=OneWay}" />
+
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <Button Content="刷新状态" Click="RefreshHosts_Click" />
+                        <Button Content="修改 hosts 文件" Click="EditHosts_Click" />
+                    </StackPanel>
+
+                    <TextBlock
+                        Text="写入需要管理员权限。程序只维护一个带标记的区块，不会改动你自己写的条目；每次写入前会自动备份到应用数据目录。「修改 hosts 文件」会以管理员身份打开记事本，可直接编辑保存。"
+                        Style="{StaticResource CaptionTextStyle}" />
+                </StackPanel>
+            </Border>
+            <!-- 诊断与测速 -->
+            <Grid Grid.Row="3" ColumnSpacing="16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="1.2*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <Border Grid.Column="0" Style="{StaticResource AppCardStyle}">
+                    <StackPanel Spacing="14">
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="连通性诊断" Style="{StaticResource SectionTitleTextStyle}" />
+                            <TextBlock
+                                Text="Ping 失败时会自动回退 TCP 443 探测，避免因对方丢弃 ICMP 而误判为不可达。"
+                                Style="{StaticResource CaptionTextStyle}" />
+                        </StackPanel>
+
+                        <ComboBox
+                            x:Name="PingTargetCombo"
+                            HorizontalAlignment="Stretch"
+                            IsEditable="True"
+                            PlaceholderText="域名或 IP"
+                            Text="{x:Bind ViewModel.PingTarget, Mode=TwoWay}" />
+
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <Button
+                                Content="开始测试"
+                                Click="Ping_Click"
+                                IsEnabled="{x:Bind ViewModel.CanPing, Mode=OneWay}" />
+                            <Button
+                                Content="刷新网卡与 DNS"
+                                Click="RefreshAdapter_Click" />
+                        </StackPanel>
+
+                        <TextBlock
+                            Text="{x:Bind ViewModel.PingResult, Mode=OneWay}"
+                            Style="{StaticResource MonoTextStyle}" />
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Column="1" Style="{StaticResource AppCardStyle}">
+                    <StackPanel Spacing="14">
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="测速" Style="{StaticResource SectionTitleTextStyle}" />
+                            <TextBlock
+                                Text="在浏览器中打开测速页。"
+                                Style="{StaticResource CaptionTextStyle}" />
+                        </StackPanel>
+
+                        <Button
+                            Content="校园内网测速"
+                            HorizontalAlignment="Stretch"
+                            Click="CampusSpeedTest_Click" />
+                        <Button
+                            Content="外网测速"
+                            HorizontalAlignment="Stretch"
+                            Click="InternetSpeedTest_Click" />
+
+                        <TextBlock
+                            Text="内网测速页地址可在「设置」中填写；未填写时会提示。"
+                            Style="{StaticResource CaptionTextStyle}" />
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Grid>
+    </ScrollViewer>
+</Page>

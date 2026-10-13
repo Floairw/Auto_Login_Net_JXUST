@@ -1,0 +1,293 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="AutoLoginNet.App.Pages.DashboardPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:Microsoft.UI.Xaml.Controls"
+    xmlns:ui="using:AutoLoginNet.App.UiSupport"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <Page.Resources>
+        <ui:BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <ui:BooleanToVisibilityConverter x:Key="BoolToVisInverted" Invert="True" />
+    </Page.Resources>
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <Grid Margin="32,24,32,32" MaxWidth="1080" HorizontalAlignment="Stretch">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <!-- 标题 -->
+            <StackPanel Grid.Row="0" Spacing="4" Margin="0,0,0,20">
+                <TextBlock Text="校园网认证" Style="{StaticResource PageTitleTextStyle}" />
+                <TextBlock
+                    Text="检测网络状态，一键完成 Dr.COM ePortal 认证"
+                    Style="{StaticResource PageSubtitleTextStyle}" />
+            </StackPanel>
+
+            <!-- 网络状态 -->
+            <Border Grid.Row="1" Style="{StaticResource AppCardStyle}" Margin="0,0,0,16">
+                <StackPanel Spacing="16">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Column="0" Spacing="4">
+                            <TextBlock Text="当前网络状态" Style="{StaticResource SectionTitleTextStyle}" />
+                            <TextBlock
+                                Text="{x:Bind Connectivity.Conclusion, Mode=OneWay}"
+                                Style="{StaticResource CaptionTextStyle}" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10">
+                            <Border
+                                Style="{StaticResource StatusPillStyle}"
+                                Background="{ThemeResource AccentFillColorDefaultBrush}">
+                                <TextBlock
+                                    Text="{x:Bind Connectivity.RequirementText, Mode=OneWay}"
+                                    FontSize="12"
+                                    Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
+                            </Border>
+                            <Button
+                                Content="重新检测"
+                                Click="Detect_Click"
+                                IsEnabled="{x:Bind ViewModel.CanDetect, Mode=OneWay}" />
+                        </StackPanel>
+                    </Grid>
+
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <Border
+                            Grid.Column="0"
+                            Background="{ThemeResource LayerFillColorDefaultBrush}"
+                            CornerRadius="6"
+                            Padding="14">
+                            <StackPanel Spacing="4">
+                                <TextBlock Text="校园网认证服务器" Style="{StaticResource CaptionTextStyle}" />
+                                <TextBlock
+                                    Text="{x:Bind Connectivity.CampusSummary, Mode=OneWay}"
+                                    FontSize="13"
+                                    TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border
+                            Grid.Column="1"
+                            Background="{ThemeResource LayerFillColorDefaultBrush}"
+                            CornerRadius="6"
+                            Padding="14">
+                            <StackPanel Spacing="4">
+                                <TextBlock Text="外网连通性" Style="{StaticResource CaptionTextStyle}" />
+                                <TextBlock
+                                    Text="{x:Bind Connectivity.ExternalSummary, Mode=OneWay}"
+                                    FontSize="13"
+                                    TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- 登录表单 -->
+            <Border Grid.Row="2" Style="{StaticResource AppCardStyle}">
+                <Grid x:Name="FormGrid" ColumnSpacing="28" RowSpacing="20">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" MinWidth="0" />
+                        <ColumnDefinition x:Name="FormDividerColumn" Width="Auto" />
+                        <ColumnDefinition Width="1.1*" MinWidth="0" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup>
+                            <!--
+                                窄窗口：账号信息与操作改为上下排列。
+                                此前两列写死了 MinWidth=320，窗口缩小时内容会超出可用宽度被裁掉。
+                            -->
+                            <VisualState x:Name="NarrowForm">
+                                <VisualState.StateTriggers>
+                                    <AdaptiveTrigger MinWindowWidth="0" />
+                                </VisualState.StateTriggers>
+                                <VisualState.Setters>
+                                    <Setter Target="CredentialsPanel.(Grid.Column)" Value="0" />
+                                    <Setter Target="CredentialsPanel.(Grid.ColumnSpan)" Value="3" />
+                                    <Setter Target="CredentialsPanel.(Grid.Row)" Value="0" />
+                                    <Setter Target="FormDividerBorder.Visibility" Value="Collapsed" />
+                                    <Setter Target="ActionsPanel.(Grid.Column)" Value="0" />
+                                    <Setter Target="ActionsPanel.(Grid.ColumnSpan)" Value="3" />
+                                    <Setter Target="ActionsPanel.(Grid.Row)" Value="1" />
+                                </VisualState.Setters>
+                            </VisualState>
+
+                            <!-- 宽窗口：左右并排 -->
+                            <VisualState x:Name="WideForm">
+                                <VisualState.StateTriggers>
+                                    <AdaptiveTrigger MinWindowWidth="960" />
+                                </VisualState.StateTriggers>
+                                <VisualState.Setters>
+                                    <Setter Target="CredentialsPanel.(Grid.Column)" Value="0" />
+                                    <Setter Target="CredentialsPanel.(Grid.ColumnSpan)" Value="1" />
+                                    <Setter Target="CredentialsPanel.(Grid.Row)" Value="0" />
+                                    <Setter Target="FormDividerBorder.Visibility" Value="Visible" />
+                                    <Setter Target="ActionsPanel.(Grid.Column)" Value="2" />
+                                    <Setter Target="ActionsPanel.(Grid.ColumnSpan)" Value="1" />
+                                    <Setter Target="ActionsPanel.(Grid.Row)" Value="0" />
+                                </VisualState.Setters>
+                            </VisualState>
+                        </VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+
+                    <!-- 左：凭据 -->
+                    <StackPanel x:Name="CredentialsPanel" Grid.Column="0" Grid.Row="0" Spacing="16">
+                        <TextBlock Text="账号信息" Style="{StaticResource SectionTitleTextStyle}" />
+
+                        <StackPanel>
+                            <TextBlock Text="账号" Style="{StaticResource FieldLabelTextStyle}" />
+                            <TextBox
+                                x:Name="UserNameBox"
+                                PlaceholderText="学号 / 工号"
+                                Text="{x:Bind ViewModel.UserName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        </StackPanel>
+
+                        <StackPanel>
+                            <TextBlock Text="密码" Style="{StaticResource FieldLabelTextStyle}" />
+                            <PasswordBox
+                                x:Name="PasswordInput"
+                                PlaceholderText="校园网密码"
+                                PasswordChanged="PasswordInput_PasswordChanged" />
+                        </StackPanel>
+
+                        <StackPanel>
+                            <TextBlock Text="运营商" Style="{StaticResource FieldLabelTextStyle}" />
+                            <ComboBox
+                                x:Name="OperatorCombo"
+                                HorizontalAlignment="Stretch"
+                                SelectionChanged="OperatorCombo_SelectionChanged" />
+                        </StackPanel>
+
+                        <StackPanel Spacing="8">
+                            <CheckBox
+                                Content="记住账号密码（用于开机自启）"
+                                IsChecked="{x:Bind ViewModel.RememberCredential, Mode=TwoWay}" />
+                            <CheckBox
+                                Content="启动时自动登录"
+                                IsChecked="{x:Bind ViewModel.AutoLoginOnStartup, Mode=TwoWay}"
+                                ToolTipService.ToolTip="打开程序后自动使用已保存的凭据登录，无需手动点击" />
+                            <CheckBox
+                                Content="跳过网络检测，直接认证"
+                                IsChecked="{x:Bind ViewModel.SkipNetworkCheck, Mode=TwoWay}"
+                                ToolTipService.ToolTip="勾选后会被记住；网络探测不可靠时可缩短登录耗时" />
+                        </StackPanel>
+
+                        <!-- 开机自启：从设置页移到这里，与登录表单放在一起更顺手 -->
+                        <Border
+                            Background="{ThemeResource LayerFillColorDefaultBrush}"
+                            CornerRadius="6"
+                            Padding="12,10">
+                            <Grid ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+
+                                <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Center">
+                                    <TextBlock Text="开机自启" FontWeight="SemiBold" FontSize="13" />
+                                    <TextBlock
+                                        Text="{x:Bind ViewModel.AutoStartStateText, Mode=OneWay}"
+                                        Style="{StaticResource CaptionTextStyle}" />
+                                </StackPanel>
+
+                                <ToggleSwitch
+                                    x:Name="AutoStartToggle"
+                                    Grid.Column="1"
+                                    OnContent="已开启"
+                                    OffContent="已关闭"
+                                    IsOn="{x:Bind ViewModel.AutoStartEnabled, Mode=OneWay}"
+                                    Toggled="AutoStartToggle_Toggled" />
+                            </Grid>
+                        </Border>
+
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button
+                                Content="清除已保存凭据"
+                                Click="ClearCredential_Click"
+                                IsEnabled="{x:Bind ViewModel.HasSavedCredential, Mode=OneWay}" />
+                            <Button
+                                Content="清空密码框"
+                                Click="ForgetPassword_Click"
+                                IsEnabled="{x:Bind ViewModel.HasSavedPassword, Mode=OneWay}" />
+                        </StackPanel>
+                    </StackPanel>
+
+                    <!-- 分隔线 -->
+                    <Border
+                        x:Name="FormDividerBorder"
+                        Grid.Column="1"
+                        Grid.Row="0"
+                        Width="1"
+                        Background="{ThemeResource CardStrokeColorDefaultBrush}" />
+
+                    <!-- 右：操作与结果 -->
+                    <StackPanel x:Name="ActionsPanel" Grid.Column="2" Grid.Row="0" Spacing="16">
+                        <TextBlock Text="操作" Style="{StaticResource SectionTitleTextStyle}" />
+
+                        <Button
+                            Content="{x:Bind ViewModel.LoginButtonText, Mode=OneWay}"
+                            Style="{StaticResource HeroActionButtonStyle}"
+                            Click="Login_Click"
+                                IsEnabled="{x:Bind ViewModel.CanLogin, Mode=OneWay}" />
+
+                        <Button
+                            Content="{x:Bind ViewModel.LogoutButtonText, Mode=OneWay}"
+                            HorizontalAlignment="Stretch"
+                            Click="Logout_Click"
+                            IsEnabled="{x:Bind ViewModel.CanLogout, Mode=OneWay}"
+                            ToolTipService.ToolTip="断开校园网认证会话；断开后将无法访问外网，可随时重新登录" />
+
+                        <ProgressBar
+                            IsIndeterminate="True"
+                            Visibility="{x:Bind ViewModel.IsBusy, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+
+                        <InfoBar
+                            x:Name="ResultBar"
+                            IsOpen="False"
+                            IsClosable="False"
+                            Severity="Informational"
+                            Title="{x:Bind ViewModel.StatusTitle, Mode=OneWay}"
+                            Message="{x:Bind ViewModel.StatusMessage, Mode=OneWay}" />
+
+                        <Expander
+                            Header="认证服务器原始响应"
+                            HorizontalAlignment="Stretch"
+                            Visibility="{x:Bind ViewModel.HasRawResponse, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                            <ScrollViewer MaxHeight="200" VerticalScrollBarVisibility="Auto">
+                                <TextBlock
+                                    Text="{x:Bind ViewModel.RawResponse, Mode=OneWay}"
+                                    Style="{StaticResource MonoTextStyle}" />
+                            </ScrollViewer>
+                        </Expander>
+
+                        <TextBlock
+                            Text="提示：登录成功后凭据会以 Windows DPAPI 加密保存在本机，仅当前用户可解密。"
+                            Style="{StaticResource CaptionTextStyle}" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+    </ScrollViewer>
+</Page>

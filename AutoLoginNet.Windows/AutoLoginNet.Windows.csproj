@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Windows 平台实现层：DPAPI、计划任务、网卡与 DNS、进程启动 -->
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>AutoLoginNet.Windows</RootNamespace>
+    <AssemblyName>AutoLoginNet.Windows</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 单元测试需要访问 internal 的解析辅助方法（例如 netsh 输出解析） -->
+    <InternalsVisibleTo Include="AutoLoginNet.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- net10 的 Windows 目标不再隐式包含 DPAPI，需要显式引用 -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AutoLoginNet.Core\AutoLoginNet.Core.csproj" />
+  </ItemGroup>
+
+</Project>

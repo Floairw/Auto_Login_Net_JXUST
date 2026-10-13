@@ -1,0 +1,550 @@
+using System.Collections.ObjectModel;
+using System.Diagnostics;
+using System.Windows.Input;
+using AutoLoginNet.App.Infrastructure;
+using AutoLoginNet.App.Mvvm;
+using AutoLoginNet.Hosts;
+using AutoLoginNet.Network;
+
+namespace AutoLoginNet.App.ViewModels;
+
+/// <summary>网络工具页视图模型：DNS 优选、网速测试与网络诊断。</summary>
+public sealed class NetworkToolsViewModel : ObservableObject
+{
+    /// <summary>等待用户在 UAC 窗口中确认时的提示。</summary>
+    private const string ElevationPendingText = "已请求管理员授权，请在 UAC 窗口中确认…";
+
+    private readonly AppServices _services;
+
+    private AdapterInfo? _adapter;
+    private string _adapterText = "正在解析活动网卡…";
+    private string _currentDnsText = "—";
+    private string _dnsStatus = "点击「测试全部」，将自动选出延迟最低的首选与备选 DNS。";
+    private DnsPair? _recommended;
+    private string _pingTarget;
+    private string _pingResult = "尚未测试";
+    private bool _isMeasuring;
+    private HostsState _hostsState = HostsState.Unknown;
+    private int _hostsAlreadyMapped;
+    private string _hostsStatus = "正在读取 hosts 状态…";
+
+    public NetworkToolsViewModel(AppServices services)
+    {
+        _services = services ?? throw new ArgumentNullException(nameof(services));
+
+        foreach (DnsProvider provider in services.DnsService.Providers)
+        {
+            DnsCandidates.Add(new DnsCandidateEntry(provider));
+        }
+
+        _pingTarget = services.Options.Tools.PingTargets.FirstOrDefault() ?? "baidu.com";
+
+        MeasureCommand = new AsyncRelayCommand(MeasureAsync, () => !_adapter.HasValue || !IsMeasuring);
+        ApplyCommand = new AsyncRelayCommand(ApplyRecommendedAsync, () => _recommended.HasValue);
+        AutomaticCommand = new AsyncRelayCommand(SetAutomaticAsync, () => _adapter.HasValue);
+        PingCommand = new AsyncRelayCommand(PingAsync, () => !string.IsNullOrWhiteSpace(_pingTarget));
+    }
+
+    public ObservableCollection<DnsCandidateEntry> DnsCandidates { get; } = new();
+
+    public IReadOnlyList<string> PingTargets => _services.Options.Tools.PingTargets;
+
+    public ICommand MeasureCommand { get; }
+
+    public ICommand ApplyCommand { get; }
+
+    public ICommand AutomaticCommand { get; }
+
+    public ICommand PingCommand { get; }
+
+    public string AdapterText
+    {
+        get => _adapterText;
+        private set => SetProperty(ref _adapterText, value);
+    }
+
+    public string CurrentDnsText
+    {
+        get => _currentDnsText;
+        private set => SetProperty(ref _currentDnsText, value);
+    }
+
+    public string DnsStatus
+    {
+        get => _dnsStatus;
+        private set => SetProperty(ref _dnsStatus, value);
+    }
+
+    public bool IsMeasuring
+    {
+        get => _isMeasuring;
+        private set
+        {
+            if (SetProperty(ref _isMeasuring, value))
+            {
+                OnPropertiesChanged(nameof(CanMeasure), nameof(CanApply));
+                (MeasureCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    /// <summary>是否可以开始 DNS 延迟测试（直接绑定到按钮）。</summary>
+    public bool CanMeasure => !_isMeasuring;
+
+    /// <summary>是否已选出可应用的推荐 DNS。</summary>
+    public bool CanApply => _recommended.HasValue && !_isMeasuring;
+
+    /// <summary>是否可以执行连通性测试。</summary>
+    public bool CanPing => !string.IsNullOrWhiteSpace(_pingTarget) && !_isMeasuring;
+
+    public string PingTarget
+    {
+        get => _pingTarget;
+        set
+        {
+            if (SetProperty(ref _pingTarget, value))
+            {
+                OnPropertyChanged(nameof(CanPing));
+                (PingCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public string PingResult
+    {
+        get => _pingResult;
+        private set => SetProperty(ref _pingResult, value);
+    }
+
+    /// <summary>初始化：解析活动网卡并读取当前 DNS。</summary>
+    public async Task InitializeAsync()
+    {
+        try
+        {
+            _adapter = await ResolveAdapterAsync();
+            if (_adapter is null)
+            {
+                AdapterText = "未找到正在使用的网卡";
+                CurrentDnsText = "—";
+                return;
+            }
+
+            AdapterText = _adapter.Value.Display;
+            await RefreshCurrentDnsAsync();
+
+            OnPropertyChanged(nameof(AdapterText));
+            (AutomaticCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+            (MeasureCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+        }
+        catch (Exception ex)
+        {
+            _services.Log.Error($"初始化网络工具页失败：{ex.Message}", "网络工具");
+            AdapterText = "网卡解析失败";
+        }
+        finally
+        {
+            await RefreshHostsAsync();
+        }
+    }
+
+    /// <summary>测试全部候选 DNS 的解析延迟，并给出推荐组合。</summary>
+    public async Task MeasureAsync()
+    {
+        IsMeasuring = true;
+        DnsStatus = $"正在测试 {DnsCandidates.Count * 2} 个 DNS 的解析延迟…";
+
+        try
+        {
+            foreach (DnsCandidateEntry candidate in DnsCandidates)
+            {
+                candidate.Reset();
+            }
+
+            var tasks = new List<Task>();
+            foreach (DnsCandidateEntry candidate in DnsCandidates)
+            {
+                tasks.Add(MeasureSlotAsync(candidate.Primary));
+                tasks.Add(MeasureSlotAsync(candidate.Backup));
+            }
+
+            await Task.WhenAll(tasks);
+
+            DnsPair? recommended = BuildRecommendation();
+            _recommended = recommended;
+
+            DnsStatus = BuildMeasureSummary(recommended);
+
+            OnPropertyChanged(nameof(CanApply));
+            (ApplyCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+        }
+        catch (Exception ex)
+        {
+            DnsStatus = $"测试失败：{ex.Message}";
+            _services.Log.Error($"DNS 延迟测试失败：{ex.Message}", "DNS");
+        }
+        finally
+        {
+            IsMeasuring = false;
+        }
+    }
+
+    /// <summary>汇总本轮测试结果：可达数量、最快/最慢，以及推荐组合。</summary>
+    private string BuildMeasureSummary(DnsPair? recommended)
+    {
+        List<DnsSlot> all = DnsCandidates
+            .SelectMany(c => new[] { c.Primary, c.Backup })
+            .ToList();
+
+        List<DnsSlot> reachable = all.Where(s => s.Reachable).OrderBy(s => s.LatencyMs).ToList();
+
+        if (reachable.Count == 0)
+        {
+            return $"已完成 {all.Count} 个 DNS 的测试，全部无应答。请检查网络连接后重试。";
+        }
+
+        string fastest = $"{reachable[0].Address}（{reachable[0].LatencyMs} ms）";
+        string summary = reachable.Count == all.Count
+            ? $"已完成 {all.Count} 个 DNS 测试，全部可达"
+            : $"已完成 {all.Count} 个 DNS 测试，{reachable.Count} 个可达、{all.Count - reachable.Count} 个无应答";
+
+        summary += $"；最快 {fastest}";
+
+        if (reachable.Count > 1)
+        {
+            summary += $"，最慢 {reachable[^1].Address}（{reachable[^1].LatencyMs} ms）";
+        }
+
+        if (recommended is { } pair)
+        {
+            summary += $"。推荐首选 {pair.Primary}";
+            if (!string.IsNullOrEmpty(pair.Backup))
+            {
+                summary += $"，备选 {pair.Backup}";
+            }
+        }
+
+        return summary + "。";
+    }
+
+    /// <summary>把推荐的 DNS 应用到网卡；非管理员时自动请求提权并等待结果。</summary>
+    public async Task ApplyRecommendedAsync()
+    {
+        if (_recommended is not { } dns || !_adapter.HasValue)
+        {
+            DnsStatus = "请先完成 DNS 延迟测试。";
+            return;
+        }
+
+        if (ShellHelper.IsElevated())
+        {
+            bool ok = await _services.DnsService.ApplyAsync(_adapter.Value, dns);
+            DnsStatus = ok ? $"已应用：{dns.AddressText}" : "应用失败，请查看日志了解详情。";
+            await RefreshCurrentDnsAsync();
+            return;
+        }
+
+        await RunElevatedDnsAsync(
+            new[] { "--primary", dns.Primary, "--backup", dns.Backup },
+            ElevationPendingText);
+    }
+
+    /// <summary>把 DNS 改回自动获取。</summary>
+    public async Task SetAutomaticAsync()
+    {
+        if (!_adapter.HasValue)
+        {
+            return;
+        }
+
+        if (ShellHelper.IsElevated())
+        {
+            bool ok = await _services.DnsService.ResetToAutomaticAsync(_adapter.Value);
+            DnsStatus = ok ? "已将 DNS 改为自动获取(DHCP)。" : "改为自动获取失败，请查看日志。";
+            await RefreshCurrentDnsAsync();
+            return;
+        }
+
+        await RunElevatedDnsAsync(Array.Empty<string>(), ElevationPendingText);
+    }
+
+    /// <summary>
+    /// 通过提权子进程执行 DNS 设置。
+    /// <para>
+    /// 子进程没有界面，因此约定一个结果文件：主进程在等待期内轮询该文件，
+    /// 拿到结果后先删除再回读网卡状态，从而给出真实反馈——
+    /// 旧实现只显示「已请求授权」，用户无从判断是否真的改成功。
+    /// </para>
+    /// </summary>
+    private async Task RunElevatedDnsAsync(string[] extraArguments, string pendingText)
+    {
+        string resultPath = DnsResultFile.CreatePath();
+
+        var arguments = new List<string>
+        {
+            ElevatedCommands.ApplyDns,
+            extraArguments.Length == 0 ? "automatic" : "apply",
+            ElevatedCommands.DnsTarget, _services.Options.Auth.Host,
+            DnsResultFile.ResultPathArgument, resultPath,
+        };
+        arguments.AddRange(extraArguments);
+
+        DnsStatus = pendingText;
+
+        DnsOperationResult? result = await RunElevatedAsync(
+            arguments.ToArray(),
+            resultPath,
+            DnsOperationResult.ReadFrom);
+
+        DnsStatus = result switch
+        {
+            null => "提权被取消，或已授权但未收到执行结果；请点击「刷新网卡与 DNS」确认。",
+            { Success: true } => $"{result.Message}（{result.AdapterDisplay}）",
+            _ => result.Message,
+        };
+
+        await RefreshCurrentDnsAsync();
+    }
+
+    /// <summary>hosts 写入/恢复：同样走提权子进程 + 结果文件。</summary>
+    private async Task RunElevatedHostsAsync(bool apply)
+    {
+        string resultPath = HostsResultFile.CreatePath();
+
+        var arguments = new[]
+        {
+            ElevatedCommands.HostsAction,
+            apply ? "apply" : "restore",
+            HostsResultFile.ResultPathArgument, resultPath,
+        };
+
+        HostsStatus = ElevationPendingText;
+
+        HostsOperationResult? result = await RunElevatedAsync(
+            arguments,
+            resultPath,
+            HostsOperationResult.ReadFrom);
+
+        HostsStatus = result switch
+        {
+            null => "提权被取消，或已授权但未收到执行结果；请点击「刷新状态」确认。",
+            _ => result.Message,
+        };
+
+        await RefreshHostsAsync();
+    }
+
+    /// <summary>
+    /// 以管理员身份运行子命令并取回结果。
+    /// <para>
+    /// 子进程没有界面，因此约定一个结果文件：主进程等它退出后读取并清理。
+    /// 这样界面能给出真实结论，而不是停在「已请求授权」。
+    /// </para>
+    /// </summary>
+    private static async Task<TResult?> RunElevatedAsync<TResult>(
+        string[] arguments,
+        string resultPath,
+        Func<string, TResult?> readResult)
+        where TResult : class
+    {
+        Process? process = ShellHelper.RunElevated(arguments);
+        if (process is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            // 正常情况子进程写完结果文件就立即退出
+            await process.WaitForExitAsync(new CancellationTokenSource(TimeSpan.FromSeconds(45)).Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // 超时后仍尝试读一次结果文件
+        }
+
+        TResult? result = readResult(resultPath);
+
+        try
+        {
+            if (File.Exists(resultPath))
+            {
+                File.Delete(resultPath);
+            }
+        }
+        catch
+        {
+            // 清理失败不影响结果展示
+        }
+
+        return result;
+    }
+
+    /// <summary>重新读取当前网卡的 DNS 状态并刷新界面。</summary>
+    public async Task RefreshCurrentDnsAsync()
+    {
+        if (!_adapter.HasValue)
+        {
+            return;
+        }
+
+        DnsPair? current = await _services.DnsService.GetCurrentDnsAsync(_adapter.Value);
+        CurrentDnsText = current?.ToString() ?? "未获取到 DNS";
+    }
+
+    // ---------------- hosts 域名解析 ----------------
+
+    /// <summary>hosts 功能是否可用（配置可关闭）。</summary>
+    public bool HostsFeatureEnabled => _services.Options.Tools.EnableHostsFeature;
+
+    /// <summary>内置的域名映射规则，用于界面预览。</summary>
+    public IReadOnlyList<HostsEntry> HostsEntries => _services.HostsFile.DefaultEntries;
+
+    /// <summary>hosts 文件路径（界面展示）。</summary>
+    public string HostsFilePath => _services.HostsFile.FilePath;
+
+    /// <summary>规则条数说明。</summary>
+    public string HostsEntryCountText => $"共 {HostsEntries.Count} 条规则";
+
+    /// <summary>当前是否已写入托管块（用于开关的初始位置）。</summary>
+    public bool HostsIsOn => _hostsState == HostsState.Applied;
+
+    /// <summary>状态说明文本。</summary>
+    public string HostsStateText => _hostsState switch
+    {
+        HostsState.Applied => "已注入校内域名解析",
+        HostsState.Outdated => "规则内容已变更，需要重新注入",
+        HostsState.Unknown => "无法读取 hosts 文件",
+        _ => "未注入",
+    };
+
+    public string HostsStatus
+    {
+        get => _hostsStatus;
+        private set => SetProperty(ref _hostsStatus, value);
+    }
+
+    /// <summary>读取 hosts 当前状态。</summary>
+    public async Task RefreshHostsAsync()
+    {
+        if (!HostsFeatureEnabled)
+        {
+            return;
+        }
+
+        HostsStatusInfo info = await _services.HostsFile.GetStatusInfoAsync();
+        _hostsState = info.State;
+        _hostsAlreadyMapped = info.AlreadyMappedCount;
+
+        OnPropertiesChanged(
+            nameof(HostsIsOn),
+            nameof(HostsStateText),
+            nameof(HostsAlreadyMappedNotice),
+            nameof(ShowHostsAlreadyMappedNotice));
+
+        HostsStatus = BuildHostsStatus(info);
+    }
+
+    /// <summary>
+    /// 提示：这些域名在 hosts 中已有手工映射。
+    /// 用户手写条目位置在托管块之前，Windows 取第一个匹配，因此优先级更高；
+    /// 此提示用于避免用户误以为开关没生效。
+    /// </summary>
+    public string HostsAlreadyMappedNotice
+        => $"检测到 hosts 中已有 {_hostsAlreadyMapped} 条同名映射（你自己维护的条目）。它们位于托管块之前，优先级更高，因此本开关开启后不会有可见变化。";
+
+    /// <summary>是否显示「已手工映射」提示。</summary>
+    public bool ShowHostsAlreadyMappedNotice
+        => _hostsState == HostsState.NotApplied
+            && _hostsAlreadyMapped > 0
+            && _hostsAlreadyMapped == HostsEntries.Count;
+
+    private string BuildHostsStatus(HostsStatusInfo info) => info.State switch
+    {
+        HostsState.Applied => $"已注入 {HostsEntries.Count} 条校内域名解析规则。",
+        HostsState.Outdated => "托管区块存在但内容与当前规则不一致，建议重新注入。",
+        HostsState.Unknown => "无法读取 hosts 文件，请检查权限或文件是否存在。",
+        _ when ShowHostsAlreadyMappedNotice =>
+            $"hosts 中已存在全部 {info.AlreadyMappedCount} 条同名映射，无需再注入；若这些条目被删除，可再用本开关恢复。",
+        _ => "未注入。开启后即使改用公共 DNS，校内站点仍可正常访问。",
+    };
+
+    /// <summary>注入或移除 hosts 规则。</summary>
+    public async Task SetHostsEnabledAsync(bool enable)
+    {
+        if (!HostsFeatureEnabled)
+        {
+            return;
+        }
+
+        if (ShellHelper.IsElevated())
+        {
+            HostsApplyResult result = enable
+                ? await _services.HostsFile.ApplyAsync()
+                : await _services.HostsFile.RestoreAsync();
+
+            HostsStatus = result.Message;
+            await RefreshHostsAsync();
+            return;
+        }
+
+        await RunElevatedHostsAsync(enable);
+    }
+
+    /// <summary>Ping 指定目标。</summary>
+    public async Task PingAsync()
+    {
+        PingResult = $"正在测试 {PingTarget} …";
+        try
+        {
+            ProbeResult result = await _services.PingService.PingAsync(PingTarget);
+            PingResult = result.Summary;
+        }
+        catch (Exception ex)
+        {
+            PingResult = $"测试失败：{ex.Message}";
+        }
+    }
+
+    private Task<AdapterInfo?> ResolveAdapterAsync()
+        => new WindowsNetworkAdapterResolver(_services.Log).ResolveAsync(_services.Options.Auth.Host);
+
+    private async Task MeasureSlotAsync(DnsSlot slot)
+    {
+        try
+        {
+            // 用真实的 UDP DNS 查询计时：ICMP 会被多数公共 DNS 丢弃，不能作为可用性依据
+            ProbeResult result = await _services.DnsLatencyProbe.MeasureAsync(slot.Address, 2000);
+            slot.Apply(result);
+        }
+        catch
+        {
+            slot.MarkUnreachable();
+        }
+    }
+
+    /// <summary>在所有可达地址中取延迟最低者为首选、次低者为备选。</summary>
+    private DnsPair? BuildRecommendation()
+    {
+        var reachable = DnsCandidates
+            .SelectMany(candidate => new[] { candidate.Primary, candidate.Backup })
+            .Where(slot => slot.Reachable)
+            .OrderBy(slot => slot.LatencyMs)
+            .ToList();
+
+        if (reachable.Count == 0)
+        {
+            return null;
+        }
+
+        reachable[0].MarkAsChosen("首选");
+
+        string backup = string.Empty;
+        if (reachable.Count > 1)
+        {
+            reachable[1].MarkAsChosen("备选");
+            backup = reachable[1].Address;
+        }
+
+        return new DnsPair(reachable[0].Address, backup);
+    }
+}
