@@ -1,0 +1,134 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>AutoLoginNet.App</RootNamespace>
+    <AssemblyName>AutoLoginNet</AssemblyName>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PlatformTarget>x64</PlatformTarget>
+
+    <!--
+      WinUI 3（Windows App SDK），非打包 + 双框架依赖（.NET 与 Windows App Runtime 都不进包）。
+      体积取舍（2026-10-13 实测，方案 B）：
+
+        | 模式                       | 发布目录   | MSI   | ZIP    | 使用前提
+        | 自包含（旧）               | 151.6 MB   | 46.8MB | 59.8 MB | 无
+        | 框架依赖（现）             | 34.6 MB    | 7.4 MB | 9.3 MB | 需先装 .NET 10 运行时 + Windows App Runtime 1.8
+
+      发布目录里仍会带 Microsoft.WindowsAppRuntime.Bootstrap.dll（391 KB）与自动初始化代码，
+      它在启动时去系统里找已安装的 Windows App Runtime；找不到时程序会以
+      0xC000027B / 找不到指定的模块 直接退出。缺运行时的判定与提示见 README 的安装说明。
+    -->
+    <UseWinUI>true</UseWinUI>
+    <EnableMsixTooling>false</EnableMsixTooling>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>false</WindowsAppSDKSelfContained>
+    <SelfContained>false</SelfContained>
+    <PublishReadyToRun>false</PublishReadyToRun>
+
+    <Nullable>enable</Nullable>
+
+    <!--
+      仅保留简体中文（用户要求：程序去除多语言支持）。
+      本项目是 exe，中性资源本来就直接嵌在主程序集里，本属性防的是两个坑：
+      1. 将来加 .resx/.resw 时，那些附属资源程序集会按系统语言去找，本属性把它们钉死在 zh-Hans；
+      2. 依赖项自带的附属资源程序集（若将来引入）同样只留简体中文，发布目录不会再冒出别的语言目录。
+      注意：WinUI / WindowsAppSDK 的语言目录不是托管附属程序集，不受本属性管，
+      那部分由 Setup\PublishPruneRules.ps1 的 $KeepCultures 处理。
+    -->
+    <SatelliteResourceLanguages>zh-Hans</SatelliteResourceLanguages>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <Version>2.0.8</Version>
+    <AssemblyVersion>2.0.8.0</AssemblyVersion>
+    <FileVersion>2.0.8.0</FileVersion>
+    <Product>校园网认证客户端</Product>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Manifest Include="app.manifest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\app.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.250907003" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AutoLoginNet.Core\AutoLoginNet.Core.csproj" />
+    <ProjectReference Include="..\AutoLoginNet.Windows\AutoLoginNet.Windows.csproj" />
+  </ItemGroup>
+
+  <!--
+    WinUI 的编译产物（*.xbf）与资源索引（*.pri）不会被 dotnet publish 默认收集。
+    缺少它们时程序仍能启动，但会在加载 XAML 时以 0xC000027B（WinRT 致命错误）崩溃——
+    发布包必须在生成后显式带上这些文件。
+  -->
+  <Target Name="CopyWinUIResourcesToPublish"
+          AfterTargets="ComputeFilesToPublish"
+          Condition="'$(PublishDir)' != ''">
+    <ItemGroup>
+      <WinUICompiledXaml Include="$(TargetDir)**\*.xbf" />
+      <WinUIResourceIndex Include="$(TargetDir)$(AssemblyName).pri" />
+      <WinUIPublishResource Include="@(WinUICompiledXaml);@(WinUIResourceIndex)">
+        <RelativePath>%(RecursiveDir)%(Filename)%(Extension)</RelativePath>
+      </WinUIPublishResource>
+      <ResolvedFileToPublish Include="@(WinUIPublishResource)">
+        <RelativePath>%(WinUIPublishResource.RelativePath)</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
+  <!--
+    ============================ 发布体积精简 ============================
+    框架依赖发布实测 36.8 MB；下面的移除集原本是针对自包含布局（151.6 MB）挑的，
+    换到框架依赖后其中若干文件（.NET 运行时自带件、Windows App SDK 自带件）已经不存在，
+    规则保留着无害——一旦将来又切回自包含发布，这套已验证过的移除集仍然生效。
+
+    刻意不做 IL 裁剪（PublishTrimmed）：WinUI 3 + CsWinRT 通过反射按名字解析 WinRT
+    投影类型（WinRT.TypeExtensions.GetAbiToProjectionVftblPtr），裁剪会把
+    Microsoft.Windows.SDK.NET.dll 从 23.7 MB 砍到 0.11 MB，随后访问任意带 x:Bind
+    的页面即抛 System.NullReferenceException。试过 TrimMode=partial 与自定义
+    TrimmerRootDescriptor，两者仍然崩溃——所以这里只做文件级删除，不碰 IL。
+
+    刻意保留 WinUIEdit.dll：自包含发布里它占 3.3 MB，实测删掉后程序无法启动，
+    是 WinUI 输入栈的硬依赖。（框架依赖发布下它由系统提供，包内本来就没有。）
+  -->
+  <Target Name="TrimPublishOutput" AfterTargets="Publish" Condition="'$(PublishDir)' != ''">
+    <ItemGroup>
+      <!-- 调试符号与调试基础设施：发布包不需要，且提供不了有用信息 -->
+      <PublishFileToRemove Include="$(PublishDir)**\*.pdb" />
+      <PublishFileToRemove Include="$(PublishDir)mscordaccore*.dll" />
+      <PublishFileToRemove Include="$(PublishDir)mscordbi.dll" />
+      <PublishFileToRemove Include="$(PublishDir)Microsoft.DiaSymReader.Native.amd64.dll" />
+
+      <!-- 未被引用的框架程序集（应用不使用 DataContract/DataSet/Tar） -->
+      <PublishFileToRemove Include="$(PublishDir)System.Private.DataContractSerialization.dll" />
+      <PublishFileToRemove Include="$(PublishDir)System.Data.Common.dll" />
+      <PublishFileToRemove Include="$(PublishDir)System.Data.DataSetExtensions.dll" />
+      <PublishFileToRemove Include="$(PublishDir)System.Formats.Tar.dll" />
+      <PublishFileToRemove Include="$(PublishDir)System.Xml.XPath.XDocument.dll" />
+
+      <!-- Windows App SDK 中本应用用不到的部分（WinUIEdit.dll 不在此列，它是必需的） -->
+      <PublishFileToRemove Include="$(PublishDir)Microsoft.Windows.Widgets.dll" />
+      <PublishFileToRemove Include="$(PublishDir)Microsoft.UI.Xaml.Controls.pri" />
+    </ItemGroup>
+
+    <Delete Files="@(PublishFileToRemove)" ContinueOnError="true" />
+
+    <ItemGroup>
+      <_RemainingPublishFile Include="$(PublishDir)**\*" />
+    </ItemGroup>
+    <Message Importance="high" Text="发布输出已精简：@(_RemainingPublishFile->Count()) 个文件" />
+  </Target>
+
+</Project>
