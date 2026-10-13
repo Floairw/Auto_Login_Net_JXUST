@@ -5,20 +5,29 @@
 .DESCRIPTION
     按顺序完成：
       1) 编译原生自定义动作（升级时定位旧版目录用）——缺失或落后于源码时强制重编；
-      2) dotnet publish 生成发布目录（Release / win-x64 / 框架依赖，约 37 MB）；
+      2) dotnet publish 生成发布目录（Release / win-x64）；
       3) 剔除「运行时不会被加载」的文件（Setup\Remove-UnusedPublishFiles.ps1）；
-      4) WiX 生成 MSI（约 7.4 MB），并压缩出免安装 ZIP（约 9.3 MB）；
+      4) WiX 生成 MSI，并压缩出免安装 ZIP；
       5) 打印产物路径、大小与 SHA256；可选复制到桌面；
       6) 可选（-BundleRuntime）把 Setup\Runtime\ 下的运行时安装器一起放进 dist\Runtime\。
 
-    框架依赖发布意味着目标机必须先装两个运行时（.NET 10 + Windows App Runtime 1.8），
-    否则程序启动即闪退；用 -BundleRuntime 可以产出「离线也能装」的完整交付物。
+    两种交付形态（同一份产品定义，只是载荷不同）：
+      - 默认（自包含）：.NET 运行时打进包，目标机无需预装，安装包约 40 MB，
+        产物 AutoLoginNet-<版本>-x64.msi / AutoLoginNet-<版本>-portable-x64.zip；
+      - -FrameworkDependent：包内不含运行时，目标机必须先装 .NET 10 与 Windows App Runtime 1.8，
+        安装包约 7 MB，产物名带 -fd 后缀，可与自包含版并存。
 
     裁剪是「先复制一份再裁剪」，原发布目录不会被破坏：
     先裁剪到 dist\AutoLoginNet，MSI/ZIP 都从裁剪后的目录出。
 
 .PARAMETER Version
     版本号。省略时从 AutoLoginNet.App\AutoLoginNet.App.csproj 读取 <Version>。
+
+.PARAMETER FrameworkDependent
+    产出框架依赖版（不含 .NET 运行时，约 7 MB，文件名带 -fd 后缀）。
+
+.PARAMETER SelfContained
+    显式产出（默认即）自包含版（含 .NET 运行时，约 40 MB）。与 -FrameworkDependent 互斥。
 
 .PARAMETER SkipPrune
     不做裁剪，直接打出完整发布目录（出问题时用来对比排查）。
@@ -43,11 +52,19 @@
     pwsh -NoProfile -File Setup\Export-Installer.ps1 -Desktop -Version 2.0.8
 
 .EXAMPLE
+    pwsh -NoProfile -File Setup\Export-Installer.ps1 -FrameworkDependent -Version 2.0.8
+
+.EXAMPLE
+    pwsh -NoProfile -File Setup\Export-Installer.ps1 -SelfContained -Version 2.0.8
+
+.EXAMPLE
     pwsh -NoProfile -File Setup\Export-Installer.ps1 -BundleRuntime
 #>
 [CmdletBinding()]
 param(
     [string]$Version,
+    [switch]$FrameworkDependent,
+    [switch]$SelfContained,
     [switch]$SkipPrune,
     [switch]$SkipVerify,
     [switch]$Desktop,
@@ -81,8 +98,18 @@ else {
     Write-Host "打包版本：$Version（命令行指定）"
 }
 
-$msiPath = Join-Path $distDir "AutoLoginNet-$Version-x64.msi"
-$zipPath = Join-Path $distDir "AutoLoginNet-$Version-portable-x64.zip"
+if ($FrameworkDependent -and $SelfContained) {
+    throw '-FrameworkDependent 与 -SelfContained 互斥：一次只能导出一种交付形态。'
+}
+
+# 两种形态共用同一套流程，只用后缀区分文件名，这样两版可以同时躺在 dist 里
+$flavorSuffix = if ($FrameworkDependent) { '-fd' } else { '' }
+$selfContainedArg = if ($FrameworkDependent) { 'false' } else { 'true' }
+$flavorLabel = if ($FrameworkDependent) { '框架依赖（需预装运行时）' } else { '自包含（含 .NET 运行时）' }
+Write-Host "交付形态：$flavorLabel"
+
+$msiPath = Join-Path $distDir "AutoLoginNet-$Version$flavorSuffix-x64.msi"
+$zipPath = Join-Path $distDir "AutoLoginNet-$Version-portable$flavorSuffix-x64.zip"
 
 # ---------------------------------------------------------------- 1. 原生自定义动作
 Write-Step '检查原生自定义动作'
@@ -103,7 +130,7 @@ else {
 }
 
 # ---------------------------------------------------------------- 2. 发布
-Write-Step "发布应用（$Configuration / win-x64 / 框架依赖）"
+Write-Step "发布应用（$Configuration / win-x64 / $flavorLabel）"
 if (Test-Path -LiteralPath $publishDir) {
     Remove-Item -LiteralPath $publishDir -Recurse -Force
 }
@@ -111,9 +138,10 @@ $publishArgs = @(
     'publish', $projectPath,
     '-c', $Configuration,
     '-r', 'win-x64',
-    # 与 csproj 的 <SelfContained>false</SelfContained> 保持一致。这里必须显式传 false：
-    # 命令行开关会覆盖 csproj 属性，写成 true 会把 .NET 运行时重新打进包（37 MB → 152 MB）。
-    '--self-contained', 'false',
+    # 命令行开关会覆盖 csproj 的 <SelfContained>，所以这里必须显式传：
+    #   true  -> 自包含（.NET 运行时进包，37 MB → 152 MB）
+    #   false -> 框架依赖（只出应用，目标机需预装 .NET 10 + Windows App Runtime 1.8）
+    '--self-contained', $selfContainedArg,
     "-p:Version=$Version",
     '-o', $publishDir,
     '--nologo'
@@ -139,7 +167,7 @@ else {
     $afterBytes = ($after | Measure-Object -Property Length -Sum).Sum
     Write-Host "裁剪后：$($after.Count) 个文件 / $([math]::Round($afterBytes / 1MB, 2)) MB"
 
-    $reportPath = Join-Path $distDir "prune-report-$Version.txt"
+    $reportPath = Join-Path $distDir "prune-report-$Version$flavorSuffix.txt"
     $report = @(
         "# 裁剪报告 版本 $Version  生成时间 $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
         "# 裁剪前：$($publishedFiles.Count) 个文件 / $([math]::Round($publishedBytes / 1MB, 2)) MB"
@@ -169,7 +197,9 @@ else {
 # ---------------------------------------------------------------- 4. 生成 MSI + ZIP
 Write-Step '生成 MSI 与免安装 ZIP'
 $installer = Join-Path $PSScriptRoot 'Build-Installer.ps1'
-& pwsh -NoProfile -File $installer -Version $Version -SkipPublish
+$installerArgs = @{ Version = $Version; SkipPublish = $true }
+if ($FrameworkDependent) { $installerArgs['FrameworkDependent'] = $true }
+& pwsh -NoProfile -File $installer @installerArgs
 if ($LASTEXITCODE -ne 0) { throw "生成安装包失败，退出码 $LASTEXITCODE" }
 
 # ---------------------------------------------------------------- 5. 汇总

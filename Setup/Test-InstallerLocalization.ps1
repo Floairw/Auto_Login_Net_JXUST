@@ -92,12 +92,16 @@ function ConvertTo-RtfText([string]$value) {
     return $sb.ToString()
 }
 
+# 注意：正文在 RTF 里不是「裸文本」，每一行前面都有段落样式前缀（\ql\f1\fs20 等），
+# 中文又写成 \uNNNN? 转义，所以直接拿「裸文本」去找永远找不到（旧版就是这么写的，
+# 断言形同虚设）。这里把样式前缀一起放进探针，找到的才是同一样式下、逐字对应的那一行。
 $sourceLines = @(Get-Content -LiteralPath $LicenseText -Encoding UTF8 | Where-Object { $_.Trim().Length -gt 0 })
 $missing = @()
 foreach ($line in $sourceLines) {
     $frag = ConvertTo-RtfText $line.Trim()
     $probe = $frag.Substring(0, [Math]::Min(60, $frag.Length))
-    if (-not $rtf.Contains($probe)) { $missing += $line.Trim().Substring(0, [Math]::Min(24, $line.Trim().Length)) }
+    $hit = @('\fs20 ', '\fs21 ', '\fs24 ' | Where-Object { $rtf.Contains($_ + $probe) }).Count -gt 0
+    if (-not $hit) { $missing += $line.Trim().Substring(0, [Math]::Min(24, $line.Trim().Length)) }
 }
 Add-Check '协议正文逐行包含' ($missing.Count -eq 0) ("正文非空行 $($sourceLines.Count) 条，缺失 $($missing.Count) 条" + $(if ($missing.Count) { '：' + ($missing -join ' / ') } else { '' }))
 

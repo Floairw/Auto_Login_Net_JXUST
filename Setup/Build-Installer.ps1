@@ -4,9 +4,14 @@
 
 .DESCRIPTION
     流程：
-      1) dotnet publish 框架依赖发布（.NET 与 Windows App Runtime 都不进包，见 App 的 csproj）
+      1) dotnet publish 发布（默认自包含；-FrameworkDependent 时不带 .NET 运行时）
       2) 收集发布目录中的全部文件，生成 WiX 组件清单（Install.wxs）
-      3) 用 WiX 编译出单个 MSI
+      3) 用 WiX 编译出单个 MSI，并打一份免安装 ZIP
+
+    两种交付形态：
+      - 默认（自包含）：安装包约 40 MB，目标机无需预装任何运行时。
+      - -FrameworkDependent：安装包约 7 MB，目标机必须先装 .NET 10 与 Windows App Runtime 1.8，
+        产物文件名带 -fd 后缀，可与自包含版同时放在 dist 里互不覆盖。
 
     之所以自己收集文件而不用 Heat：Heat 扩展的版本与 WiX 主工具版本强绑定
     （WixToolset.Heat 6.x 要求 WiX 6.x），而本机工具链是 WiX 5.x。
@@ -22,12 +27,21 @@ param(
     [string]$Version,
     [string]$Manufacturer = 'AutoLoginNet',
     [string]$ProductName = '校园网认证客户端',
+    # 两种交付形态共用同一份产品定义，只靠文件名后缀区分：
+    #   默认（不加开关）= 自包含：.NET 运行时打进包，目标机无需预装，约 40 MB；
+    #   -FrameworkDependent = 框架依赖：包内不含运行时，需先装 .NET 10 + Windows App Runtime 1.8，约 7 MB。
+    # 两者的 ProductCode/UpgradeCode 相同，属于同一产品的两种分发方式，不能同时装。
+    [switch]$FrameworkDependent,
     [switch]$SkipPublish
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $projectPath = Join-Path $repoRoot 'AutoLoginNet.App\AutoLoginNet.App.csproj'
+
+# 文件名后缀：两种形态的产物必须能同时躺在 dist 里，否则后一次导出会覆盖前一次
+$flavorSuffix = if ($FrameworkDependent) { '-fd' } else { '' }
+$flavorLabel = if ($FrameworkDependent) { '框架依赖（需预装运行时）' } else { '自包含（含 .NET 运行时）' }
 
 # 版本号以 csproj 为唯一来源。此前脚本里另写了一份 '2.0.5' 默认值，结果应用已到 v2.0.7
 # 而打出来的安装包仍是 2.0.5（安装包落后了两次功能改动）。未显式传 -Version 时一律读 csproj。
@@ -42,18 +56,20 @@ $publishDir = Join-Path $repoRoot 'dist\AutoLoginNet'
 $setupDir = $PSScriptRoot
 $objDir = Join-Path $setupDir 'obj'
 $outDir = Join-Path $repoRoot 'dist'
-$msiPath = Join-Path $outDir "AutoLoginNet-$Version-x64.msi"
+$msiPath = Join-Path $outDir "AutoLoginNet-$Version$flavorSuffix-x64.msi"
 
 function Write-Step([string]$text) { Write-Host "==> $text" -ForegroundColor Cyan }
 
 # ---------------------------------------------------------------- 1) 发布
 if (-not $SkipPublish) {
-    Write-Step "发布应用（框架依赖 $RuntimeIdentifier，约 37 MB）"
+    Write-Step "发布应用（$flavorLabel $RuntimeIdentifier）"
     if (Test-Path $publishDir) { Remove-Item $publishDir -Recurse -Force }
 
-    # 必须显式传 false：dotnet publish 的 --self-contained 会覆盖 csproj 里的 <SelfContained>，
-    # 这里若写成 true，.NET 运行时会被重新打进包，体积从 ~37 MB 涨回 ~152 MB。
-    dotnet publish $projectPath -c $Configuration -r $RuntimeIdentifier --self-contained false `
+    # 这里必须显式传 --self-contained：命令行开关会覆盖 csproj 里的 <SelfContained>。
+    #   true  -> 自包含，.NET 运行时进包（约 40 MB 安装包 / 152 MB 发布目录）
+    #   false -> 框架依赖，只出应用（约 7 MB 安装包 / 37 MB 发布目录）
+    $selfContainedArg = if ($FrameworkDependent) { 'false' } else { 'true' }
+    dotnet publish $projectPath -c $Configuration -r $RuntimeIdentifier --self-contained $selfContainedArg `
         -p:Version=$Version -o $publishDir | Out-Host
 
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish 失败（退出码 $LASTEXITCODE）" }
@@ -284,7 +300,7 @@ if ($locFailures.Count -gt 0) { throw "安装包中文化校验失败（$($locFa
 Write-Step "生成免安装压缩包"
 # 用架构短名（x64）而不是完整 RID（win-x64），与 MSI 的命名保持一致
 $archLabel = $RuntimeIdentifier -replace '^win-', ''
-$zipPath = Join-Path $outDir "AutoLoginNet-$Version-portable-$archLabel.zip"
+$zipPath = Join-Path $outDir "AutoLoginNet-$Version-portable$flavorSuffix-$archLabel.zip"
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -299,7 +315,7 @@ $zip = Get-Item $zipPath
 $payloadMb = [math]::Round((Get-ChildItem $publishDir -Recurse -File | Measure-Object Length -Sum).Sum / 1MB, 1)
 
 Write-Host ""
-Write-Host "产物已生成：" -ForegroundColor Green
+Write-Host "产物已生成（$flavorLabel）：" -ForegroundColor Green
 Write-Host "  MSI      $([math]::Round($msi.Length / 1MB, 1)) MB  $($msi.Name)"
 Write-Host "  免安装包  $([math]::Round($zip.Length / 1MB, 1)) MB  $($zip.Name)"
 Write-Host "  解包后    $payloadMb MB  ($((Get-ChildItem $publishDir -Recurse -File).Count) 个文件)"

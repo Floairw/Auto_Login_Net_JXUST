@@ -88,6 +88,23 @@ for ($i = 0; $i -lt $lines.Count; $i++) {
 [void]$sb.Append('}' + "`r`n")
 
 $rtf = $sb.ToString()
+
+# 自检：只要有一行没进 RTF，安装向导里就会少一条条款——静默少字没人会发现。
+# 探针必须带上段落样式前缀：正文在 RTF 里形如「\ql\f1\fs20 \u26412?...」，
+# 裸文本永远匹配不到（这正是以前那个断言失效的原因）。
+$missingLines = @()
+foreach ($line in $lines) {
+    $trimmed = $line.Trim()
+    if ($trimmed.Length -eq 0) { continue }
+    $frag = ConvertTo-RtfText $trimmed
+    $probe = $frag.Substring(0, [Math]::Min(60, $frag.Length))
+    $hit = @('\fs20 ', '\fs21 ', '\fs24 ' | Where-Object { $rtf.Contains($_ + $probe) }).Count -gt 0
+    if (-not $hit) { $missingLines += $trimmed.Substring(0, [Math]::Min(24, $trimmed.Length)) }
+}
+if ($missingLines.Count -gt 0) {
+    throw "生成的 RTF 缺少 $($missingLines.Count) 行正文：$($missingLines -join ' / ')"
+}
+
 # 写出时统一成 CRLF，并把 ASCII 以外的字符挡在门外（有的话说明转义漏了）
 $rtf = $rtf -replace "`r`n", "`n" -replace "`n", "`r`n"
 [System.IO.File]::WriteAllText($Output, $rtf, [System.Text.Encoding]::ASCII)

@@ -7,9 +7,38 @@ v2.0 是一次彻底重构，v1.x 的历史记录保留在文件末尾。
 
 ## v2.0.8 — 2026-10-13
 
-> 相比 2.0.7 的变化：**发布模式改为框架依赖**（安装包 46.8 MB → 7.4 MB）、
-> **安装向导与许可协议中文化**（第三方非官方版免责声明）、界面问题修复与一键导出脚本。
+> 相比 2.0.7 的变化：**同一版本提供两种载荷**（自包含 31.4 MB / 框架依赖 7.4 MB）、
+> **安装向导与许可协议中文化**（协议正文换成新的第三方免责声明，含 MIT 开源条款）、
+> 界面问题修复与一键导出脚本。
 > 升级安装沿用 2.0.7 的做法：自动卸旧版并装回旧版所在目录。
+
+### 安装包：同时提供「自包含」与「框架依赖」两种交付
+
+用户要求「导出两个版本，一个包含框架依赖，一个不包含」，于是打包脚本支持两种载荷，
+文件名用 `-fd` 后缀区分，两版可同时躺在 `dist\` 里，共用同一 `UpgradeCode`（属同一产品的两种分发方式，不能同时安装）：
+
+| 形态 | 发布目录 | 裁剪后 | MSI | ZIP | 目标机需预装 |
+| --- | --- | --- | --- | --- | --- |
+| 自包含（默认） | 102.5 MB / 229 个文件 | 99.6 MB / 203 个文件 | **31.4 MB** | **39.5 MB** | Windows App Runtime 1.8 |
+| 框架依赖（`-fd`） | 36.8 MB / 51 个文件 | 34.6 MB / 25 个文件 | **7.4 MB** | **9.3 MB** | 上面的 + .NET 10 运行时 |
+
+- **`Setup\Export-Installer.ps1` 新增 `-SelfContained` / `-FrameworkDependent`**（互斥，默认框架依赖以兼容旧用法），
+  并按形态决定 `--self-contained` 参数与产物文件名后缀。
+- **`Setup\Build-Installer.ps1` 新增 `-FrameworkDependent`**，`-SkipPublish` 复用发布目录时形态必须一致。
+- 两版都**不含** Windows App Runtime 的原生层（`Microsoft.ui.xaml.dll` 等约 50 MB）：非打包应用按设计
+  从系统运行时获取，所以即使「自包含」版也仍需预装 Windows App Runtime 1.8。要连它一并内置需把
+  `WindowsAppSDKSelfContained` 设为 `true`（发布目录 ~152 MB），当前未采用。
+
+### 协议正文换成新版免责声明
+
+- **协议来源改为仓库根目录的 `免责声明.txt`**（64 行，用户提供的最新全文），同步一份到
+  `Setup\LicenseText.txt` 供打包脚本使用；相比旧正文多了「开源许可与 MIT 协议」一节，
+  并补上了作者、本地加密存储、修改版分发义务等条款。
+- **`Setup\Test-InstallerLocalization.ps1` 的「协议正文逐行包含」断言此前形同虚设**：
+  它拿裸文本去 RTF 里找，而正文在 MSI 的 `Control` 表里形如 `\ql\f1\fs20 \u26412?...`
+  （带段落样式前缀 + Unicode 转义），永远匹配不到。现已改为连样式前缀一起探测；
+  `Setup\New-LicenseRtf.ps1` 也加了同规则的自检，任何一行没进 RTF 就直接抛错。
+  修正后：**45 行正文逐行命中，缺失 0 行**，RTF 长度 18343。
 
 ### 体积：改为框架依赖发布（安装包缩小到约 1/6）
 
@@ -44,8 +73,9 @@ WinUI 原生组件（约 50 MB）和 WinRT 投影（约 33 MB）。
   `-loc`；`Setup\Build-Installer.ps1` 已固定带上它。**`.wxl` 不会被自动发现**——
   把 `.wxl` 放在 `.wxs` 同目录里 WiX 连看都不看（同目录放一个故意写坏的 `.wxl`，
   编译照样成功），只有 `-loc` 才生效，所以这一步不能省。
-- **许可协议页换成第三方非官方版免责声明**：正文来源是 `Setup\LicenseText.txt`
-  （用户提供的全文，逐字保存），由 `Setup\New-LicenseRtf.ps1` 生成 `Setup\license.rtf`，
+- **许可协议页换成第三方非官方版免责声明**：正文来源是仓库根目录的 `免责声明.txt`
+  （用户提供的全文，逐字保存；包内使用同步副本 `Setup\LicenseText.txt`），
+  由 `Setup\New-LicenseRtf.ps1` 生成 `Setup\license.rtf`，
   再经 `WixUILicenseRtf` 属性注入 `LicenseAgreementDlg` 的正文框——不自己改对话框，
   也不把几千个 RTF 字符塞进 `.wxl` 字符串里。`license.rtf` 属于生成物，需要时重新生成即可。
 - **中文化现在是打包的硬断言**：新增 `Setup\Test-InstallerLocalization.ps1`，
