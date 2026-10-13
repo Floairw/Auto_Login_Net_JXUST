@@ -294,4 +294,4 @@ dotnet test Auto_Login_Net_JXUST.sln -c Release
 
 ## 许可
 
-[MIT](LICENSE.txt)（仅指代码）。本工具为第三方非官方软件，使用条款以 [免责声明.txt](免责声明.txt) 为准。
+[MIT]
