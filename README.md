@@ -1,26 +1,79 @@
 # Auto_Login_Net_JXUST
 
-江西理工大学（JXUST）校园网 **Dr.COM ePortal** 认证客户端。
-基于 **WinUI 3（Windows App SDK）** 的现代化桌面应用，支持一键认证与开机自动登录。
+江西理工大学（JXUST）校园网 **Dr.COM ePortal** 认证客户端。基于 **WinUI 3（Windows App SDK）** 的桌面应用，一键认证、开机自动登录、DNS 优选与校内域名解析。
 
-> v2.0 为完全重构版本：界面重写为 WinUI 3，核心逻辑重新分层，并修正了若干安全与可用性缺陷。
-> 详见 [CHANGELOG.md](CHANGELOG.md)。
+> **第三方非官方软件**：与学校及学校网络中心、信息中心无隶属或授权关系。完整条款见仓库根目录 [免责声明.txt](免责声明.txt)（安装向导的许可协议页即此全文）。
+>
+> v2.0 是彻底重写版：界面迁移到 WinUI 3、核心逻辑重新分层、修正若干可用性与安全缺陷。逐版本改动见 [CHANGELOG.md](CHANGELOG.md)。
+
+---
+
+## 下载与安装
+
+安装包都是**简体中文向导**，装到 `Program Files`、自动创建开始菜单快捷方式、升级时自动卸旧版。三者的界面和功能完全相同，**只有携带的运行时不同**，按目标机器情况选一个即可（同一 `UpgradeCode`，不能同时装）。
+
+| 选它 | 文件 | 大小 | 目标机需预装 |
+| --- | --- | --- | --- |
+| **不确定目标机装过什么** | `AutoLoginNet-<版本>-was-fd-x64.msi`<br>`…-portable-was-fd-x64.zip` | 46.7 MB | **什么都不用装** |
+| 已装 Windows App Runtime 1.8 | `AutoLoginNet-<版本>-x64.msi`<br>`…-portable-x64.zip` | 31.3 MB | Windows App Runtime 1.8 |
+| 两个运行时都已装、只要最小包 | `AutoLoginNet-<版本>-fd-x64.msi`<br>`…-portable-fd-x64.zip` | 7.4 MB | Windows App Runtime 1.8 + .NET 10 |
+
+- **`-was-fd`（全内置）**：`.NET 10` 与 Windows App Runtime 原生层都在包里，目标是「拷到任何 Windows 10 1809+ 机器上都能跑」。
+- **默认版（自包含 .NET）**：`.NET` 随包提供，仍需系统的 Windows App Runtime。
+- **`-fd`（框架依赖）**：两个运行时都不带，体积最小。
+
+`.zip` 是免安装版：解压到任意目录直接运行 `AutoLoginNet.exe`，不写注册表。
+
+### 缺运行时会怎样
+
+程序**启动即闪退，退出码 `0xC000027B` 或提示「找不到指定的模块」，界面上没有任何提示**。所以拿不准目标机状态时，直接用全内置版。
+
+两个运行时都装一下只要两条命令（缺哪个装哪个，都装好了则什么都不做）：
+
+| 运行时 | 版本要求 | 下载 |
+| --- | --- | --- |
+| Windows App Runtime | **1.8**（须与 `Microsoft.WindowsAppSDK` 引用版本对齐） | <https://aka.ms/windowsappsdk/1.8/latest/windowsappruntimeinstall-x64.exe> |
+| .NET 桌面运行时 | **10.x**（仅 `-fd` 版需要） | <https://dotnet.microsoft.com/download/dotnet/10.0> |
+
+```powershell
+# 先把上面两个安装器放进 Setup\Runtime\（获取方式见 Setup\Runtime\README.md）
+pwsh -NoProfile -File .\Setup\Install-Runtime.ps1
+
+# 只想看会做什么、不动系统
+pwsh -NoProfile -File .\Setup\Install-Runtime.ps1 -WhatIf
+```
+
+> Windows App Runtime 是**按主版本并行**的产品线：装了 2.x **不等于**满足 1.8 的依赖。
+
+### 离线分发
+
+框架依赖版要发给别人，用 `-BundleRuntime` 把两个运行时安装器一起放进 `dist\Runtime\`，得到一份完全离线的交付物（安装器共约 160 MB，不入库）：
+
+```powershell
+pwsh -NoProfile -File .\Setup\Export-Installer.ps1 -FrameworkDependent -BundleRuntime
+```
+
+> 安装包未签名，首次安装时 Windows SmartScreen 会提示「未知发布者」，属预期行为。
+
+---
 
 ## 功能
 
 | 模块 | 说明 |
 | --- | --- |
 | **一键登录** | 自动探测网络环境 → 提交认证 → 分类反馈结果（成功 / 已在线 / 密码错误 / 欠费停机 / 网络异常） |
-| **自动登录** | 可开启「启动时自动登录」，打开程序即用已保存凭据登录；瞬时失败按配置自动重试 |
+| **自动登录** | 「启动时自动登录」打开后，启动程序即用已保存凭据登录；瞬时失败按配置自动重试 |
 | **注销断网** | 主动断开校园网认证会话（等价于门户上的「注销」）；仅在外网可达时可用，带二次确认 |
-| **网络状态** | 并行探测校园网认证服务器与外网连通性，明确告知「需要认证 / 无需认证 / 网络未知」 |
+| **网络状态** | 首页与侧栏共享同一份探测结果，并行探测认证服务器与外网连通性，明确告知「需要认证 / 无需认证 / 网络未知」（旧版两处各自探测、结论经常互相矛盾） |
 | **开机自启** | 首页开关即可启用，以「登录时 + 最高权限」计划任务静默认证，无窗口、不打断使用 |
-| **凭据安全** | Windows DPAPI（当前用户 + 附加熵）加密，文件复制到其他机器或用户下均无法解密 |
+| **凭据安全** | Windows DPAPI（当前用户 + 附加熵）加密；文件复制到其他机器或用户账户下均无法解密 |
 | **DNS 优选** | 用**真实 DNS 查询**测量各公共 DNS 的解析延迟（而非 ICMP Ping），逐项显示首选/备选延迟并给出推荐组合，只改当前上网所用网卡 |
-| **校内域名解析** | 一键把 JXUST 校内站点写入 hosts，解决「改用公共 DNS 后教务、办事大厅、校园卡等访问不了」的问题；只维护带标记的区块，不动你的手写条目，写入前自动备份 |
-| **连通性诊断** | Ping 失败自动回退 TCP 443，避免对端丢弃 ICMP 时误判 |
-| **运行日志** | 实时查看、按级别/关键字过滤，密码等敏感字段写入前已脱敏；增量渲染，长日志不卡顿 |
+| **校内域名解析** | 「网络工具 → 修改 hosts 文件」把 16 条 JXUST 校内站点映射写入 hosts，解决「改用公共 DNS 后教务、办事大厅、校园卡等访问不了」；只维护带标记的区块，不动手写条目，写入前自动备份 |
+| **连通性诊断** | Ping 失败自动回退 TCP 443，避免对端丢弃 ICMP 时误判为断网 |
+| **运行日志** | 实时查看、按级别/关键字过滤；密码等敏感字段写入前已脱敏；增量渲染，长日志不卡顿 |
 | **主题** | 跟随系统 / 浅色 / 深色，全部使用系统 Fluent 主题资源 |
+
+---
 
 ## 项目结构
 
@@ -37,6 +90,7 @@ AutoLoginNet.Windows   # 平台实现（net10.0-windows）
 ├─ DpapiCredentialProtector      # DPAPI 加解密
 ├─ WindowsNetworkAdapterResolver # 按路由选择上网网卡
 ├─ WindowsDnsService             # netsh 读写 DNS
+├─ WindowsHostsFileService       # hosts 托管块写入（原地写 + 回读校验 + 失败回滚）
 └─ ProcessRunner                 # 外部进程执行（含编码处理）
 
 AutoLoginNet.App       # WinUI 3 界面（net10.0-windows10.0.19041.0）
@@ -45,51 +99,14 @@ AutoLoginNet.App       # WinUI 3 界面（net10.0-windows10.0.19041.0）
 ├─ Infrastructure/     # 主题、界面设置、Shell 辅助
 └─ Mvvm/               # 轻量 MVVM 基类（无第三方依赖）
 
-AutoLoginNet.Tests     # 单元测试（181 个用例）
+AutoLoginNet.Tests     # 单元测试（MSTest，181 个用例）
+
+Setup/                 # 打包与安装脚本（见「构建」）
 ```
 
-依赖方向严格单向：`App → Windows → Core`。Core 不引用任何 Windows API，
-因此认证解析、凭据格式、日志脱敏等关键逻辑都能在测试中直接验证。
+依赖方向严格单向：`App → Windows → Core`。Core 不引用任何 Windows API，因此认证解析、凭据格式、日志脱敏等关键逻辑都能在测试中直接验证。
 
-## 安装
-
-提供**三种载荷形态**（**同一份产品定义，只是载荷与文件名后缀不同，不能同时安装**）：
-
-| 文件 | 载荷 | 解包后 | 目标机需预装 |
-| --- | --- | --- | --- |
-| `AutoLoginNet-<版本>-was-fd-x64.msi` / `-portable-was-fd-x64.zip` | **全内置**：`.NET 10` + Windows App Runtime 原生层都在包里 | 151.5 MB / 287 个文件 | **什么都不用装** |
-| `AutoLoginNet-<版本>-x64.msi` / `-portable-x64.zip` | **自包含 .NET**：`.NET 10` 在包里，不含 Windows App Runtime | 99.6 MB / 203 个文件 | Windows App Runtime 1.8 |
-| `AutoLoginNet-<版本>-fd-x64.msi` / `-portable-fd-x64.zip` | **框架依赖**：两个运行时都不含 | 34.6 MB / 25 个文件 | Windows App Runtime 1.8 + .NET 10 |
-
-三种都：装到 `Program Files`、自动创建开始菜单快捷方式、支持升级安装（自动卸旧版），**安装向导与许可协议均为简体中文**；ZIP 版解压到任意目录直接运行 `AutoLoginNet.exe`。
-
-> **先看要不要装运行时。** 只有 `-fd` 版两个都必须预装，默认版要预装 Windows App Runtime 1.8，
-> **`-was-fd` 全内置版一个都不用装**（`.NET` 与 Windows App Runtime 都在包里，实测启动时
-> 宿主日志为 `Executing as a self-contained app`，只读应用目录里的 `coreclr.dll`）。
-> 缺运行时的话程序启动即闪退（`0xC000027B` / “找不到指定的模块”，没有任何界面提示）。
->
-> | 运行时 | 版本 | 下载 |
-> | --- | --- | --- |
-> | Windows App Runtime | **1.8**（对应 `Microsoft.WindowsAppSDK 1.8`） | <https://aka.ms/windowsappsdk/1.8/latest/windowsappruntimeinstall-x64.exe> |
-> | .NET 桌面运行时 | **10.x**（仅 `-fd` 版需要） | <https://dotnet.microsoft.com/download/dotnet/10.0> |
->
-> 两条命令即可装好，缺哪个装哪个、都装好了则什么都不做：
->
-> ```powershell
-> # 把两个安装器放到 Setup\Runtime\ 后（见 Setup\Runtime\README.md）
-> pwsh -NoProfile -File .\Setup\Install-Runtime.ps1
-> ```
->
-> 想让交付物「离线也能装」，用 `-BundleRuntime` 打包（把两个安装器一起放进 `dist\Runtime\`）：
->
-> ```powershell
-> pwsh -NoProfile -File .\Setup\Export-Installer.ps1 -FrameworkDependent -BundleRuntime
-> ```
->
-> 注意 Windows App Runtime 是**按主版本并行**的产品线：装了 2.x 不等于满足 1.8 的依赖。
->
-> 安装包未签名，首次运行/安装时 Windows SmartScreen 会提示"未知发布者"，属预期行为。
-> 安装向导的许可协议页是**第三方非官方免责声明**（正文维护入口 `免责声明.txt`，同步到 `Setup\LicenseText.txt`），必须勾选同意才能继续。
+---
 
 ## 构建
 
@@ -101,38 +118,38 @@ dotnet build Auto_Login_Net_JXUST.sln -c Release
 
 产物：`AutoLoginNet.App\bin\x64\Release\net10.0-windows10.0.19041.0\win-x64\AutoLoginNet.exe`
 
-> 默认发布为 **非打包 + 框架依赖**：不携带 .NET 运行时，也不携带 Windows App Runtime，
-> 所以发布目录只有约 37 MB、裁剪后约 **34.6 MB / 25 个文件**。代价是目标机必须先装上面那两个运行时，
-> 且 **Windows App Runtime 的版本必须与 `Microsoft.WindowsAppSDK` 的引用版本对齐**。
-> 命令行上的 `--self-contained` 会覆盖 csproj 的 `<SelfContained>`，两种产物都靠打包脚本显式传参区分。
+> 该产物是**非打包 + 框架依赖**形态（csproj 里 `SelfContained` 与 `WindowsAppSDKSelfContained` 均为 `false`），本机开发跑得动是因为开发机装了运行时。命令行上的 `--self-contained` 会覆盖 csproj 的 `<SelfContained>`，所以三种交付形态全靠打包脚本显式传参区分。
 
-## 打包安装包
+### 打包安装包
+
+一次性准备 WiX v5：
 
 ```powershell
-# 需要 WiX v5（一次性准备）
 dotnet tool install --global wix --version 5.0.2
 wix extension add -g WixToolset.UI.wixext/5.0.2
+```
 
-# 全内置版（含 .NET 与 Windows App Runtime，约 47 MB，文件名带 -was-fd）
+一条命令完成「发布 → 裁剪 → 验证 → 出 MSI/ZIP」，三种形态各一条：
+
+```powershell
+# 全内置（含 .NET 与 Windows App Runtime，约 47 MB，文件名带 -was-fd）
 pwsh -NoProfile -File .\Setup\Export-Installer.ps1 -WindowsAppSDKSelfContained -Desktop
 
-# 自包含 .NET 版（默认，含 .NET 运行时）
+# 自包含 .NET（默认，含 .NET 运行时）
 pwsh -NoProfile -File .\Setup\Export-Installer.ps1 -SelfContained -Desktop
 
-# 框架依赖版（文件名带 -fd）
+# 框架依赖（文件名带 -fd）
 pwsh -NoProfile -File .\Setup\Export-Installer.ps1 -FrameworkDependent -Desktop
 
-# 只要 MSI/ZIP、已有发布目录时（形态必须与发布目录一致，脚本会自检）
+# 已有发布目录、只要 MSI/ZIP 时（形态必须与发布目录一致，脚本会自检）
 pwsh -NoProfile -File .\Setup\Build-Installer.ps1 -SkipPublish -FrameworkDependent
 ```
 
-`Export-Installer.ps1` 一条命令完成：编译原生自定义动作 → `dotnet publish`（按形态决定是否自包含）→
-按「运行时不会被加载」的证据裁剪（`Setup\PublishPruneRules.ps1`）→ 裁剪后自动跑
-`Setup\Verify-PrunedPublish.ps1`（13 项检查，任一不过就中止）→ 生成 MSI 与 ZIP → 打印大小与 SHA256。
-常用参数还有 `-Version 2.1.0`、`-SkipPrune`（排查用）、`-BundleRuntime`（连带运行时安装器）。
-三种形态共用同一份 `UpgradeCode`/`ProductCode` 规则，属于同一产品的三种分发方式，**不能同时装**。
+`Export-Installer.ps1` 依次做：编译原生自定义动作（升级时定位旧版目录）→ `dotnet publish`（按形态决定是否自包含）→ 按「运行时不会被加载」的证据裁剪（`Setup\PublishPruneRules.ps1`）→ 跑裁剪后可用性验证（`Setup\Verify-PrunedPublish.ps1`）→ 生成 MSI 与 ZIP → 打印大小与 SHA256。
 
-实测体积（2.0.8）：
+常用参数：`-Version 2.1.0`（默认读 csproj）、`-SkipPrune` / `-SkipVerify`（排查用）、`-BundleRuntime`（连带运行时安装器）、`-Desktop`（复制到桌面）。
+
+**实测体积（2.0.8）**：
 
 | 形态 | 发布目录 | 裁剪后 | MSI | ZIP |
 | --- | --- | --- | --- | --- |
@@ -140,26 +157,27 @@ pwsh -NoProfile -File .\Setup\Build-Installer.ps1 -SkipPublish -FrameworkDepende
 | 自包含 .NET（默认） | 102.5 MB / 229 个文件 | **99.6 MB / 203 个文件** | **31.3 MB** | **39.5 MB** |
 | 框架依赖（`-fd`） | 36.8 MB / 51 个文件 | **34.6 MB / 25 个文件** | **7.4 MB** | **9.3 MB** |
 
-`-fd` 版裁剪后仍有 24.9 MB 是 `Microsoft.Windows.SDK.NET.dll`——它是 WinRT 的托管投影，再省无可省。
-全内置版多出来的 ~52 MB 正好是 Windows App Runtime 的原生层（`Microsoft.ui.xaml.dll` 14.4 MB、
-`Microsoft.UI.Xaml.Controls` 6.3 MB、`WinUIEdit` 等）；它由 `-p:WindowsAppSDKSelfContained=true` 产生，
-**必须与 `--self-contained true` 同时传**，只传前者会退化成「有 Windows App Runtime、没有 .NET」的中间形态。
+体积主要来自三块，与程序自身代码无关（程序自身约 2.2 MB）：`.NET 10` 运行时 63 MB、WinUI 原生层 50 MB、WinRT 托管投影 33 MB（其中 `Microsoft.Windows.SDK.NET.dll` 单个 23.7 MB，且**不能裁剪**——WinUI 3 + CsWinRT 按名字反射解析投影类型，`PublishTrimmed` 会让带 `x:Bind` 的页面直接崩）。
 
-程序自身的 XAML/资源目录 `AutoLoginNet.pri` 与 `App.xbf` 必须存在——
-缺了程序会在加载 XAML 时崩溃，所以构建阶段直接报错而不是产出坏包。
+体积优化的坑记在这里，改打包脚本前先读：
 
-MSI 打完后还会自动读安装包的表做中文化断言（`Setup\Test-InstallerLocalization.ps1`）：
-10 个关键界面串、许可协议正文逐行比对 `Setup\LicenseText.txt`、`ProductLanguage=2052`，
-任何一项不过就中止打包。安装界面文案在 `Setup\WixUI_zh-CN.wxl`，协议正文在
-`免责声明.txt`（同步副本 `Setup\LicenseText.txt`；改完跑 `Setup\New-LicenseRtf.ps1` 重新生成 RTF，
-再重新打包即可）。
+- `-p:WindowsAppSDKSelfContained=true` **必须与 `--self-contained true` 同时传**。只传前者时，csproj 的 `<SelfContained>false</SelfContained>` 会让它退化成「有 Windows App Runtime、没有 .NET」的中间形态（发布目录 93.88 MB），装到干净机器上照样闪退。
+- `Microsoft.UI.Xaml.Phone.dll`、`WinUIEdit.dll`、`marshal.dll`、`MRU.dll`、`*.winmd` 等**不能删**，删了启动即失败；`en-us` 语言目录也不能删（WinUI 按目录名加载，删了崩溃）。
+- 裁剪只做有证据的删除（程序集引用闭包、内嵌 Reg-Free WinRT 清单、源码 grep），规则与理由见 `Setup\PublishPruneRules.ps1`。
+- `AutoLoginNet.pri` 与 `App.xbf` 缺失会导致加载 XAML 时崩溃，构建阶段直接报错，不会产出坏包。
 
-> `.wxl` 不会被 WiX 自动发现，只有 `-loc` 传进去才生效，这一点别改。
+### 安装包中文化是硬断言
+
+MSI 打完后会读安装包的表逐项校验（`Setup\Test-InstallerLocalization.ps1`）：10 个关键界面串、许可协议正文**逐行**比对 `Setup\LicenseText.txt`、`ProductLanguage=2052`，任何一项不过就中止打包。
+
+- 界面文案：`Setup\WixUI_zh-CN.wxl`。注意 **`.wxl` 不会被 WiX 自动发现**，只有打包时显式传 `-loc` 才生效，这一步不能省。
+- 协议正文：维护入口是仓库根目录 `免责声明.txt`，同步副本 `Setup\LicenseText.txt`；改完跑 `pwsh -File .\Setup\New-LicenseRtf.ps1` 重新生成 RTF，再重新打包。
+
+---
 
 ## 运行
 
 ```powershell
-# 直接运行界面
 .\AutoLoginNet.App\bin\x64\Release\net10.0-windows10.0.19041.0\win-x64\AutoLoginNet.exe
 ```
 
@@ -169,16 +187,13 @@ MSI 打完后还会自动读安装包的表做中文化断言（`Setup\Test-Inst
 | --- | --- |
 | （无） | 正常启动图形界面 |
 | `--autostart` | 静默登录后退出（由开机自启计划任务调用，无窗口） |
-| `--register-autostart 0\|1` | 内部参数：提权进程注册/移除自启任务 |
+| `--hosts apply` / `--hosts restore` | 提权进程写入 / 还原 hosts 托管块（另有 `--hosts-file` 供测试覆盖路径） |
+| `--register-autostart 0\|1` | 内部参数：提权进程注册 / 移除自启任务 |
 | `--apply-dns apply\|automatic` | 内部参数：提权进程应用 DNS |
 
 退出码：`0` 成功 / `1` 无凭据 / `2` 认证失败 / `3` 异常 / `4` 超时。
 
-## 测试
-
-```powershell
-dotnet test AutoLoginNet.Tests\AutoLoginNet.Tests.csproj
-```
+---
 
 ## 配置
 
@@ -217,13 +232,15 @@ dotnet test AutoLoginNet.Tests\AutoLoginNet.Tests.csproj
       { "ipAddress": "219.229.232.50", "hostName": "jxust.edu.cn", "comment": "官网" },
       { "ipAddress": "2001:250:6c0b:6010::10:50", "hostName": "jxust.edu.cn", "comment": "" },
       { "ipAddress": "10.16.17.37", "hostName": "jw.jxust.edu.cn", "comment": "教务系统" }
-      // …共 14 条，完整列表见「网络工具」页
+      // …共 16 条，完整列表见「网络工具」页
     ]
   }
 }
 ```
 
-配置损坏或字段缺失时会自动回退到内置默认值，不会导致程序无法启动。
+配置损坏或字段缺失时自动回退到内置默认值，不会导致程序无法启动。
+
+---
 
 ## 数据与安全
 
@@ -233,33 +250,47 @@ dotnet test AutoLoginNet.Tests\AutoLoginNet.Tests.csproj
 | `%AppData%\AutologinForDrcom\appsettings.json` | 运行配置 |
 | `%AppData%\AutologinForDrcom\ui-settings.json` | 界面偏好（主题等） |
 | `%AppData%\AutologinForDrcom\autologin.log` | 日志（按大小滚动，自动脱敏） |
+| `C:\Windows\System32\drivers\etc\hosts.bak.*` | 写入 hosts 前的自动备份 |
 
 安全设计要点：
 
-- **日志双重脱敏**：写入前用正则把 `password` / `token` / `secret` 等字段值替换为 `***`，
-  且日志中账号只保留前 2 位与末 1 位。
+- **日志双重脱敏**：写入前用正则把 `password` / `token` / `secret` 等字段值替换为 `***`，且账号只保留前 2 位与末 1 位。
 - **凭据格式带版本号**：遇到不受支持的旧格式会明确提示重新登录，而不是静默降级使用。
-- 提权操作（计划任务、DNS、hosts）单独以管理员身份执行并立即退出，主程序始终以普通权限运行。
+- **提权操作隔离**（计划任务、DNS、hosts）单独以管理员身份执行并立即退出，主程序始终以普通权限运行。
+- **hosts 写入可靠**：原地写入而非「临时文件改名替换」（部分安全软件的 HIPS 会拦截对 hosts 的改名覆盖），写完立即回读比对，不一致就用写入前的内容回滚。
 
-> **关于密码传输**：认证服务器 `/eportal/portal/login` **只从 URL 查询串读取账号与密码**，
-> 完全不解析 POST body（实测：凭据放在 body 中会返回「无法获取用户认证账号！」）。
-> 因此密码必须出现在 URL 中——这是服务器端的既有约定，客户端没有替代方案。
-> 风险由两点收敛：请求只发往校园网内网的明文 HTTP 门户（`http://10.17.8.18:801`），
-> 且日志在写入前会把 `user_password` 脱敏。
+> **关于密码传输**：认证服务器 `/eportal/portal/login` **只从 URL 查询串读取账号与密码**，完全不解析 POST body（实测：凭据放在 body 中会返回「无法获取用户认证账号！」）。因此密码必须出现在 URL 中——这是服务器端的既有约定，客户端没有替代方案。风险由两点收敛：请求只发往校园网内网的明文 HTTP 门户（`http://10.17.8.18:801`），且日志在写入前会把 `user_password` 脱敏。
+
+---
+
+## 测试
+
+```powershell
+dotnet test Auto_Login_Net_JXUST.sln -c Release
+```
+
+181 个用例，覆盖认证响应解析、凭据加解密与格式迁移、日志脱敏、配置校验与回退、网络判定、hosts 托管块生成与写入（含「原地写入不替换文件」的回归断言）。
+
+---
 
 ## 故障排查
 
 | 现象 | 处理 |
 | --- | --- |
+| 程序启动即闪退、没有任何界面 | 缺运行时。装 Windows App Runtime 1.8（`-fd` 版还要 .NET 10），或直接用全内置版 `-was-fd` |
 | 提示「网络异常 / 无法连接认证服务器」 | 确认已连接校园网；在设置页核对认证服务器地址与端口 |
 | 提示「账号不可用」 | 账号欠费或停机，需前往网络中心处理 |
 | 点了「注销」后上不了网 | 这是预期行为（注销会主动断开会话）。重新点「立即登录」即可恢复 |
 | 注销按钮是灰的 | 只在检测到外网可达时才可注销；先点「重新检测」，或本来就没在线 |
 | 开机后没有自动认证 | 在「设置 → 启动」确认开机自启已开启（需要管理员授权） |
+| hosts 写入失败，提示被安全软件拦截 | 火绒等 HIPS 会拦截对 `drivers\etc` 目录的改名/新建；程序已改为原地写入，若仍失败请在该安全软件里放行本程序，或临时退出后重试 |
+| 校内站点访问不了 | 「网络工具 → 修改 hosts 文件」写一次 hosts；只维护带标记的区块，不动手写条目 |
 | 换了地方上网无法认证 | 打开首页的「跳过网络检测，直接认证」再试 |
-| DNS 测速中部分服务器显示「—」 | 属正常结果：这些 DNS 在当前网络下不提供解析服务（校园网通常只放行国内解析器，腾讯 / Google / Cloudflare 的 53 端口会被拦截）。能测出延迟的即为可用，直接选延迟最低的即可 |
-| 需要详细排查 | 「运行日志」页可实时查看并过滤，或点击「打开日志目录」 |
+| DNS 测速中部分服务器显示「—」 | 属正常：这些 DNS 在当前网络下不提供解析服务（校园网通常只放行国内解析器，腾讯 / Google / Cloudflare 的 53 端口会被拦截）。能测出延迟的即为可用，选延迟最低的即可 |
+| 需要详细排查 | 「运行日志」页可实时查看并过滤，或点「打开日志目录」 |
 
-## 说明
+---
 
-各版本改动记录见 [CHANGELOG.md](CHANGELOG.md)。
+## 许可
+
+[MIT](LICENSE.txt)（仅指代码）。本工具为第三方非官方软件，使用条款以 [免责声明.txt](免责声明.txt) 为准。
