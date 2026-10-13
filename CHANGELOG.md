@@ -7,27 +7,36 @@ v2.0 是一次彻底重构，v1.x 的历史记录保留在文件末尾。
 
 ## v2.0.8 — 2026-10-13
 
-> 相比 2.0.7 的变化：**同一版本提供两种载荷**（自包含 31.4 MB / 框架依赖 7.4 MB）、
+> 相比 2.0.7 的变化：**同一版本提供三种载荷**（全内置 46.7 MB / 自包含 31.3 MB / 框架依赖 7.4 MB）、
 > **安装向导与许可协议中文化**（协议正文换成新的第三方免责声明，含 MIT 开源条款）、
 > 界面问题修复与一键导出脚本。
 > 升级安装沿用 2.0.7 的做法：自动卸旧版并装回旧版所在目录。
 
-### 安装包：同时提供「自包含」与「框架依赖」两种交付
+### 安装包：三种交付形态（全内置 / 自包含 / 框架依赖）
 
-用户要求「导出两个版本，一个包含框架依赖，一个不包含」，于是打包脚本支持两种载荷，
-文件名用 `-fd` 后缀区分，两版可同时躺在 `dist\` 里，共用同一 `UpgradeCode`（属同一产品的两种分发方式，不能同时安装）：
+打包脚本支持三种载荷，文件名用 `-was-fd` / `-fd` 后缀区分，可同时躺在 `dist\` 里，
+共用同一 `UpgradeCode`（属同一产品的三种分发方式，不能同时安装）：
 
 | 形态 | 发布目录 | 裁剪后 | MSI | ZIP | 目标机需预装 |
 | --- | --- | --- | --- | --- | --- |
-| 自包含（默认） | 102.5 MB / 229 个文件 | 99.6 MB / 203 个文件 | **31.4 MB** | **39.5 MB** | Windows App Runtime 1.8 |
+| **全内置（`-was-fd`）** | 159.6 MB / 498 个文件 | 151.5 MB / 287 个文件 | **46.7 MB** | **59.8 MB** | 无 |
+| 自包含 .NET（默认） | 102.5 MB / 229 个文件 | 99.6 MB / 203 个文件 | **31.3 MB** | **39.5 MB** | Windows App Runtime 1.8 |
 | 框架依赖（`-fd`） | 36.8 MB / 51 个文件 | 34.6 MB / 25 个文件 | **7.4 MB** | **9.3 MB** | 上面的 + .NET 10 运行时 |
 
-- **`Setup\Export-Installer.ps1` 新增 `-SelfContained` / `-FrameworkDependent`**（互斥，默认框架依赖以兼容旧用法），
-  并按形态决定 `--self-contained` 参数与产物文件名后缀。
-- **`Setup\Build-Installer.ps1` 新增 `-FrameworkDependent`**，`-SkipPublish` 复用发布目录时形态必须一致。
-- 两版都**不含** Windows App Runtime 的原生层（`Microsoft.ui.xaml.dll` 等约 50 MB）：非打包应用按设计
-  从系统运行时获取，所以即使「自包含」版也仍需预装 Windows App Runtime 1.8。要连它一并内置需把
-  `WindowsAppSDKSelfContained` 设为 `true`（发布目录 ~152 MB），当前未采用。
+- **`Setup\Export-Installer.ps1` / `Build-Installer.ps1` 新增 `-WindowsAppSDKSelfContained`**：
+  把 Windows App Runtime 的原生层（`Microsoft.ui.xaml.dll` 14.4 MB 等，约 52 MB）也打进包，
+  目标机零运行时依赖。
+- **关键陷阱**：`-p:WindowsAppSDKSelfContained=true` **必须与 `--self-contained true` 同时传**。
+  只传前者时，命令行/`csproj` 里的 `<SelfContained>false</SelfContained>` 会让它退化成
+  「有 Windows App Runtime、没有 .NET」的中间形态（发布目录 93.88 MB），装到干净机器上照样闪退。
+- 全内置版实测零依赖：复制到含中文与 `#` 的路径后启动，宿主日志为
+  `Using app-local location ...` → `Executing as a self-contained app as per config file`，
+  只读应用目录里的 `coreclr.dll`，界面正常、认证成功。
+- **`Build-Installer.ps1` 增加形态自检**：`-SkipPublish` 复用已有发布目录时，用
+  `coreclr.dll` / `Microsoft.ui.xaml.dll` 是否存在来比对形态，不一致就报错——
+  避免把上一次导出的形态套上本次的文件名（例如把中间形态印成「全内置」）。
+- 三种形态都**内含** `AutoLoginNet.pri` 与 `App.xbf`；`-fd` 版裁剪后仍有 24.9 MB 是
+  `Microsoft.Windows.SDK.NET.dll`（WinRT 托管投影，再省无可省）。
 
 ### 协议正文换成新版免责声明
 
@@ -52,6 +61,8 @@ WinUI 原生组件（约 50 MB）和 WinRT 投影（约 33 MB）。
   MSI 46.8 MB → **7.4 MB**；免安装 ZIP 59.8 MB → **9.3 MB**。
   减少的正是随包分发的运行时本体。裁剪后体积的最大单项变成 `Microsoft.Windows.SDK.NET.dll`
   （24.9 MB，WinRT 托管投影），框架依赖下已无法再省——运行时只提供 Windows App Runtime 本身。
+  （后来用户要求「连 Windows App Runtime 也内置」，于是有了本文档开头的**全内置**形态；
+  这里说的「默认自包含」指只含 .NET、仍需系统 Windows App Runtime 的那一版，现在约 31.3 MB / 99.6 MB 解包。）
 - **代价是要先装运行时**，否则程序启动即闪退（`0xC000027B` / “找不到指定的模块”，
   没有任何界面提示）：
   - Windows App Runtime **1.8**（对应 `Microsoft.WindowsAppSDK 1.8`）

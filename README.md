@@ -53,18 +53,20 @@ AutoLoginNet.Tests     # 单元测试（181 个用例）
 
 ## 安装
 
-提供两种分发形式，每种都有「自包含」和「框架依赖」两版（**同一份产品定义，只是载荷与文件名后缀不同，不能同时安装**）：
+提供**三种载荷形态**（**同一份产品定义，只是载荷与文件名后缀不同，不能同时安装**）：
 
-| 形式 | 适用场景 |
-| --- | --- |
-| `AutoLoginNet-<版本>-x64.msi` / `-portable-x64.zip` | **自包含**：`.NET 10` 运行时打进包，约 31.4 MB / 99.6 MB 解包，目标机**只需**预装 Windows App Runtime 1.8 |
-| `AutoLoginNet-<版本>-fd-x64.msi` / `-portable-fd-x64.zip` | **框架依赖**（`-fd`）：包内不含运行时，约 7.4 MB / 34.6 MB 解包，目标机需预装 **两个**运行时 |
+| 文件 | 载荷 | 解包后 | 目标机需预装 |
+| --- | --- | --- | --- |
+| `AutoLoginNet-<版本>-was-fd-x64.msi` / `-portable-was-fd-x64.zip` | **全内置**：`.NET 10` + Windows App Runtime 原生层都在包里 | 151.5 MB / 287 个文件 | **什么都不用装** |
+| `AutoLoginNet-<版本>-x64.msi` / `-portable-x64.zip` | **自包含 .NET**：`.NET 10` 在包里，不含 Windows App Runtime | 99.6 MB / 203 个文件 | Windows App Runtime 1.8 |
+| `AutoLoginNet-<版本>-fd-x64.msi` / `-portable-fd-x64.zip` | **框架依赖**：两个运行时都不含 | 34.6 MB / 25 个文件 | Windows App Runtime 1.8 + .NET 10 |
 
-两种都：装到 `Program Files`、自动创建开始菜单快捷方式、支持升级安装（自动卸旧版），**安装向导与许可协议均为简体中文**；
-ZIP 版解压到任意目录直接运行 `AutoLoginNet.exe`。
+三种都：装到 `Program Files`、自动创建开始菜单快捷方式、支持升级安装（自动卸旧版），**安装向导与许可协议均为简体中文**；ZIP 版解压到任意目录直接运行 `AutoLoginNet.exe`。
 
-> **框架依赖版（-fd）装之前必须先装两个运行时**，否则程序启动即闪退（`0xC000027B` / “找不到指定的模块”，没有任何界面提示）：
-> 自包含版则只需要下面表格里的 **Windows App Runtime 1.8**（`.NET` 已随包提供）。
+> **先看要不要装运行时。** 只有 `-fd` 版两个都必须预装，默认版要预装 Windows App Runtime 1.8，
+> **`-was-fd` 全内置版一个都不用装**（`.NET` 与 Windows App Runtime 都在包里，实测启动时
+> 宿主日志为 `Executing as a self-contained app`，只读应用目录里的 `coreclr.dll`）。
+> 缺运行时的话程序启动即闪退（`0xC000027B` / “找不到指定的模块”，没有任何界面提示）。
 >
 > | 运行时 | 版本 | 下载 |
 > | --- | --- | --- |
@@ -81,7 +83,7 @@ ZIP 版解压到任意目录直接运行 `AutoLoginNet.exe`。
 > 想让交付物「离线也能装」，用 `-BundleRuntime` 打包（把两个安装器一起放进 `dist\Runtime\`）：
 >
 > ```powershell
-> pwsh -NoProfile -File .\Setup\Export-Installer.ps1 -BundleRuntime
+> pwsh -NoProfile -File .\Setup\Export-Installer.ps1 -FrameworkDependent -BundleRuntime
 > ```
 >
 > 注意 Windows App Runtime 是**按主版本并行**的产品线：装了 2.x 不等于满足 1.8 的依赖。
@@ -111,17 +113,16 @@ dotnet build Auto_Login_Net_JXUST.sln -c Release
 dotnet tool install --global wix --version 5.0.2
 wix extension add -g WixToolset.UI.wixext/5.0.2
 
-# 自包含版（默认，含 .NET 运行时）
+# 全内置版（含 .NET 与 Windows App Runtime，约 47 MB，文件名带 -was-fd）
+pwsh -NoProfile -File .\Setup\Export-Installer.ps1 -WindowsAppSDKSelfContained -Desktop
+
+# 自包含 .NET 版（默认，含 .NET 运行时）
 pwsh -NoProfile -File .\Setup\Export-Installer.ps1 -SelfContained -Desktop
 
 # 框架依赖版（文件名带 -fd）
 pwsh -NoProfile -File .\Setup\Export-Installer.ps1 -FrameworkDependent -Desktop
 
-# 两版一起导出
-pwsh -NoProfile -File .\Setup\Export-Installer.ps1 -SelfContained -Desktop
-pwsh -NoProfile -File .\Setup\Export-Installer.ps1 -FrameworkDependent -Desktop
-
-# 只需要 MSI/ZIP、已有发布目录时（-FrameworkDependent 需与发布形态一致）
+# 只要 MSI/ZIP、已有发布目录时（形态必须与发布目录一致，脚本会自检）
 pwsh -NoProfile -File .\Setup\Build-Installer.ps1 -SkipPublish -FrameworkDependent
 ```
 
@@ -129,19 +130,20 @@ pwsh -NoProfile -File .\Setup\Build-Installer.ps1 -SkipPublish -FrameworkDepende
 按「运行时不会被加载」的证据裁剪（`Setup\PublishPruneRules.ps1`）→ 裁剪后自动跑
 `Setup\Verify-PrunedPublish.ps1`（13 项检查，任一不过就中止）→ 生成 MSI 与 ZIP → 打印大小与 SHA256。
 常用参数还有 `-Version 2.1.0`、`-SkipPrune`（排查用）、`-BundleRuntime`（连带运行时安装器）。
-两种形态共用同一份 `UpgradeCode`/`ProductCode` 规则，属于同一产品的两种分发方式，**不能同时装**。
+三种形态共用同一份 `UpgradeCode`/`ProductCode` 规则，属于同一产品的三种分发方式，**不能同时装**。
 
 实测体积（2.0.8）：
 
 | 形态 | 发布目录 | 裁剪后 | MSI | ZIP |
 | --- | --- | --- | --- | --- |
-| 自包含（默认，含 .NET 运行时） | 102.5 MB / 229 个文件 | **99.6 MB / 203 个文件** | **31.4 MB** | **39.5 MB** |
+| 全内置（`-was-fd`） | 159.6 MB / 498 个文件 | **151.5 MB / 287 个文件** | **46.7 MB** | **59.8 MB** |
+| 自包含 .NET（默认） | 102.5 MB / 229 个文件 | **99.6 MB / 203 个文件** | **31.3 MB** | **39.5 MB** |
 | 框架依赖（`-fd`） | 36.8 MB / 51 个文件 | **34.6 MB / 25 个文件** | **7.4 MB** | **9.3 MB** |
 
-框架依赖版裁剪后仍有 24.9 MB 是 `Microsoft.Windows.SDK.NET.dll`——它是 WinRT 的托管投影，
-再省无可省。两版都**不含** Windows App Runtime 的原生层（`Microsoft.ui.xaml.dll` 等，约 50 MB），
-这是非打包应用按设计从系统运行时获取的；真要连它一并内置，需要把 `WindowsAppSDKSelfContained` 设为 `true`，
-发布目录会涨回 ~152 MB，目前没有采用。
+`-fd` 版裁剪后仍有 24.9 MB 是 `Microsoft.Windows.SDK.NET.dll`——它是 WinRT 的托管投影，再省无可省。
+全内置版多出来的 ~52 MB 正好是 Windows App Runtime 的原生层（`Microsoft.ui.xaml.dll` 14.4 MB、
+`Microsoft.UI.Xaml.Controls` 6.3 MB、`WinUIEdit` 等）；它由 `-p:WindowsAppSDKSelfContained=true` 产生，
+**必须与 `--self-contained true` 同时传**，只传前者会退化成「有 Windows App Runtime、没有 .NET」的中间形态。
 
 程序自身的 XAML/资源目录 `AutoLoginNet.pri` 与 `App.xbf` 必须存在——
 缺了程序会在加载 XAML 时崩溃，所以构建阶段直接报错而不是产出坏包。

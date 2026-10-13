@@ -165,13 +165,20 @@ foreach ($rule in $MustKeep) {
     $kept.Add("$($rule.Wildcard)  →  $($rule.Reason)")
 }
 
-# ------------------------------------------------ 6. 框架依赖模式的反向校验
-# 这些文件由系统安装的 Windows App Runtime 提供，不该出现在框架依赖发布目录里。
-# 一旦出现，最可能的原因是发布命令忘了传 --self-contained false（体积会从 37 MB 涨回 152 MB）。
-foreach ($name in $MustKeepSystemProvided) {
-    $hits = @(Get-ChildItem -LiteralPath $PublishDir -Recurse -File -Filter $name -ErrorAction SilentlyContinue)
-    if ($hits.Count -gt 0) {
-        $warnings.Add("「$name」出现在发布目录里——本次发布可能不是框架依赖模式（检查 dotnet publish 是否传了 --self-contained false）")
+# ------------------------------------------------ 6. 形态一致性提示
+# Windows App Runtime 的原生层由系统安装的运行时提供。发布目录里带着 coreclr.dll
+# （自包含）却又有 Microsoft.ui.xaml.dll，说明本次是「全内置」形态（-was-fd），属预期；
+# 两者都不在，说明是「框架依赖」形态，也不该出现这些文件。
+# 真正可疑的是 coreclr.dll 不在、这些原生文件却在——那是「有 Windows App Runtime、
+# 没有 .NET」的中间形态：装到干净机器上照样闪退，而且它会被当成全内置版发出去。
+$hasDotNetRuntime = Test-Path -LiteralPath (Join-Path $PublishDir 'coreclr.dll')
+$hasAppSdkRuntime = Test-Path -LiteralPath (Join-Path $PublishDir 'Microsoft.ui.xaml.dll')
+if (-not $hasDotNetRuntime -and $hasAppSdkRuntime) {
+    foreach ($name in $MustKeepSystemProvided) {
+        $hits = @(Get-ChildItem -LiteralPath $PublishDir -Recurse -File -Filter $name -ErrorAction SilentlyContinue)
+        if ($hits.Count -gt 0) {
+            $warnings.Add("「$name」出现在发布目录里，但包内没有 coreclr.dll——这是「有 Windows App Runtime、没有 .NET」的中间形态（多半只传了 -p:WindowsAppSDKSelfContained=true 而漏了 --self-contained true），装到干净机器上会闪退")
+        }
     }
 }
 
