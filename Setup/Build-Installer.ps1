@@ -1,0 +1,306 @@
+<#
+.SYNOPSIS
+    生成 MSI 安装包的可复现构建脚本。
+
+.DESCRIPTION
+    流程：
+      1) dotnet publish 框架依赖发布（.NET 与 Windows App Runtime 都不进包，见 App 的 csproj）
+      2) 收集发布目录中的全部文件，生成 WiX 组件清单（Install.wxs）
+      3) 用 WiX 编译出单个 MSI
+
+    之所以自己收集文件而不用 Heat：Heat 扩展的版本与 WiX 主工具版本强绑定
+    （WixToolset.Heat 6.x 要求 WiX 6.x），而本机工具链是 WiX 5.x。
+    这里的收集逻辑很简单，自己写反而更可控。
+
+.NOTES
+    未签名。安装时 Windows 会弹出 SmartScreen 提示，属预期行为。
+#>
+[CmdletBinding()]
+param(
+    [string]$Configuration = 'Release',
+    [string]$RuntimeIdentifier = 'win-x64',
+    [string]$Version,
+    [string]$Manufacturer = 'AutoLoginNet',
+    [string]$ProductName = '校园网认证客户端',
+    [switch]$SkipPublish
+)
+
+$ErrorActionPreference = 'Stop'
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$projectPath = Join-Path $repoRoot 'AutoLoginNet.App\AutoLoginNet.App.csproj'
+
+# 版本号以 csproj 为唯一来源。此前脚本里另写了一份 '2.0.5' 默认值，结果应用已到 v2.0.7
+# 而打出来的安装包仍是 2.0.5（安装包落后了两次功能改动）。未显式传 -Version 时一律读 csproj。
+if (-not $Version) {
+    $versionXml = [xml](Get-Content $projectPath -Raw)
+    $Version = $versionXml.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+    if (-not $Version) { throw "无法从 $projectPath 读取 <Version>" }
+}
+Write-Host "==> 打包版本：$Version（来源：AutoLoginNet.App.csproj）" -ForegroundColor Cyan
+
+$publishDir = Join-Path $repoRoot 'dist\AutoLoginNet'
+$setupDir = $PSScriptRoot
+$objDir = Join-Path $setupDir 'obj'
+$outDir = Join-Path $repoRoot 'dist'
+$msiPath = Join-Path $outDir "AutoLoginNet-$Version-x64.msi"
+
+function Write-Step([string]$text) { Write-Host "==> $text" -ForegroundColor Cyan }
+
+# ---------------------------------------------------------------- 1) 发布
+if (-not $SkipPublish) {
+    Write-Step "发布应用（框架依赖 $RuntimeIdentifier，约 37 MB）"
+    if (Test-Path $publishDir) { Remove-Item $publishDir -Recurse -Force }
+
+    # 必须显式传 false：dotnet publish 的 --self-contained 会覆盖 csproj 里的 <SelfContained>，
+    # 这里若写成 true，.NET 运行时会被重新打进包，体积从 ~37 MB 涨回 ~152 MB。
+    dotnet publish $projectPath -c $Configuration -r $RuntimeIdentifier --self-contained false `
+        -p:Version=$Version -o $publishDir | Out-Host
+
+    if ($LASTEXITCODE -ne 0) { throw "dotnet publish 失败（退出码 $LASTEXITCODE）" }
+}
+
+if (-not (Test-Path (Join-Path $publishDir 'AutoLoginNet.exe'))) {
+    throw "未找到发布产物：$publishDir\AutoLoginNet.exe"
+}
+
+# 发布包必须包含 WinUI 的编译 XAML 与资源索引，否则运行时会以 0xC000027B 崩溃
+foreach ($required in @('AutoLoginNet.pri', 'App.xbf')) {
+    if (-not (Test-Path (Join-Path $publishDir $required))) {
+        throw "发布产物缺少 $required —— 安装包会装出一个无法启动的程序"
+    }
+}
+
+# ------------------------------------------------- 2) 生成 WiX 组件清单
+Write-Step "收集文件并生成 WiX 组件清单"
+
+function Get-StableGuid([string]$seed) {
+    $md5 = [System.Security.Cryptography.MD5]::Create()
+    try {
+        return [Guid]::new($md5.ComputeHash([Text.Encoding]::UTF8.GetBytes($seed))).ToString().ToUpperInvariant()
+    }
+    finally { $md5.Dispose() }
+}
+
+function ConvertTo-XmlText([string]$value) { [System.Security.SecurityElement]::Escape($value) }
+
+function Get-DirectoryId([string]$relativeDir) {
+    if ([string]::IsNullOrEmpty($relativeDir)) { return 'INSTALLFOLDER' }
+    return New-WixId 'dir' $relativeDir.TrimEnd('\')
+}
+
+<#
+    WiX 标识符上限为 72 个字符。发布包里存在超长文件名
+    （例如 WindowsAppSdk.AppxDeploymentExtensions.Desktop-EventLog-Instrumentation.dll），
+    直接转换会超限并报 WIX1026。
+    这里保留可读前缀 + 稳定短哈希：既满足长度限制，又不会因截断而彼此冲突。
+#>
+function New-WixId([string]$prefix, [string]$key) {
+    $slug = ($key -replace '[^A-Za-z0-9]', '_')
+    $hash = (Get-StableGuid "id/$key").Substring(0, 8)
+
+    $maxSlug = 72 - ($prefix.Length + 2 + $hash.Length)
+    if ($slug.Length -gt $maxSlug) { $slug = $slug.Substring(0, $maxSlug) }
+    if ([string]::IsNullOrEmpty($slug)) { $slug = 'x' }
+
+    return "${prefix}_${slug}_$hash"
+}
+
+$files = Get-ChildItem $publishDir -Recurse -File | ForEach-Object {
+    [pscustomobject]@{
+        FullPath = $_.FullName
+        Relative = $_.FullName.Substring($publishDir.Length).TrimStart('\')
+        Directory = [System.IO.Path]::GetDirectoryName($_.FullName.Substring($publishDir.Length).TrimStart('\'))
+        Size = $_.Length
+    }
+} | Sort-Object Relative
+
+if ($files.Count -eq 0) { throw "发布目录为空：$publishDir" }
+
+# 目录树：按层级生成，WiX 要求父目录先于子目录声明
+$directories = @{}
+foreach ($file in $files) {
+    if ([string]::IsNullOrEmpty($file.Directory)) { continue }
+    $parts = $file.Directory.Split('\')
+    for ($i = 1; $i -le $parts.Count; $i++) {
+        $sub = ($parts[0..($i - 1)] -join '\')
+        if (-not $directories.ContainsKey($sub)) {
+            $parent = if ($i -eq 1) { '' } else { ($parts[0..($i - 2)] -join '\') }
+            $directories[$sub] = [pscustomobject]@{
+                Relative = $sub
+                Id = Get-DirectoryId $sub
+                ParentId = Get-DirectoryId $parent
+                Name = $parts[$i - 1]
+            }
+        }
+    }
+}
+
+$sb = [System.Text.StringBuilder]::new()
+[void]$sb.AppendLine('<?xml version="1.0" encoding="utf-8"?>')
+[void]$sb.AppendLine('<!-- 本文件由 Setup\Build-Installer.ps1 自动生成，请勿手工编辑 -->')
+[void]$sb.AppendLine('<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">')
+[void]$sb.AppendLine('  <Fragment>')
+[void]$sb.AppendLine('    <StandardDirectory Id="ProgramFiles64Folder">')
+[void]$sb.AppendLine('      <Directory Id="INSTALLFOLDER" Name="AutoLoginNet">')
+
+foreach ($dir in ($directories.Values | Sort-Object Relative)) {
+    [void]$sb.AppendLine("        <Directory Id=""$($dir.Id)"" Name=""$(ConvertTo-XmlText $dir.Name)"" />")
+}
+[void]$sb.AppendLine('      </Directory>')
+[void]$sb.AppendLine('    </StandardDirectory>')
+[void]$sb.AppendLine('  </Fragment>')
+[void]$sb.AppendLine()
+[void]$sb.AppendLine('  <Fragment>')
+[void]$sb.AppendLine('    <ComponentGroup Id="AppFiles">')
+
+$grouped = $files | Group-Object Directory
+foreach ($group in $grouped) {
+    $dirId = Get-DirectoryId $group.Name
+    foreach ($file in $group.Group) {
+        $componentId = New-WixId 'cmp' $file.Relative
+        $fileId = New-WixId 'fil' $file.Relative
+        $source = ConvertTo-XmlText $file.FullPath
+        $name = ConvertTo-XmlText ([System.IO.Path]::GetFileName($file.Relative))
+
+        # 组件 GUID 由文件相对路径派生成确定值：同一文件重复构建得到同一 GUID，
+        # 便于升级安装识别；用自动 GUID（*）在跨构建时反而不稳定。
+        $guid = Get-StableGuid "AutoLoginNet/$($file.Relative)"
+
+        [void]$sb.AppendLine("      <Component Id=""$componentId"" Directory=""$dirId"" Guid=""$guid"">")
+        [void]$sb.AppendLine("        <File Id=""$fileId"" Source=""$source"" Name=""$name"" KeyPath=""yes"" />")
+        [void]$sb.AppendLine('      </Component>')
+    }
+}
+
+[void]$sb.AppendLine('    </ComponentGroup>')
+[void]$sb.AppendLine('  </Fragment>')
+[void]$sb.AppendLine('</Wix>')
+
+New-Item -ItemType Directory -Path $objDir -Force | Out-Null
+$installWxs = Join-Path $objDir 'Install.wxs'
+Set-Content -Path $installWxs -Value $sb.ToString() -Encoding UTF8
+Write-Host "    文件 $($files.Count) 个，目录 $($directories.Count) 个 -> $installWxs"
+
+# ------------------------------------------------------- 3) 生成产品定义
+Write-Step "生成产品定义 (Product.wxs)"
+# Icon 的 SourceFile 不走 -bindpath 解析，必须给绝对路径
+$iconPath = (Resolve-Path (Join-Path $repoRoot 'AutoLoginNet.App\Assets\app.ico')).Path
+
+# 升级时定位旧版目录的自定义动作。原生 DLL 必须存在且是最新的：
+# 缺失时若静默跳过，打出来的安装包会「装得上、但升级时另起目录」，
+# 这正是用户报的那个问题，所以绝不降级处理。
+#
+# 缺失或落后于源码时自动重新编译，而不是让调用者去猜还要先跑哪个脚本。
+$nativeCaDll = Join-Path $setupDir 'CustomActions.Native\bin\AutoLoginNet.SetupActions.Native.dll'
+$nativeCaSrc = Join-Path $setupDir 'CustomActions.Native\UpgradeLocation.cpp'
+$nativeCaBuilder = Join-Path $setupDir 'Build-NativeCustomActions.ps1'
+$needsNativeBuild = -not (Test-Path $nativeCaDll)
+if (-not $needsNativeBuild -and (Test-Path $nativeCaSrc)) {
+    $needsNativeBuild = (Get-Item $nativeCaSrc).LastWriteTime -gt (Get-Item $nativeCaDll).LastWriteTime
+}
+if ($needsNativeBuild) {
+    if (-not (Test-Path $nativeCaBuilder)) {
+        throw "缺少原生自定义动作构建脚本：$nativeCaBuilder"
+    }
+    Write-Host '  原生自定义动作缺失或已过期，正在编译…' -ForegroundColor DarkGray
+    & pwsh -NoProfile -File $nativeCaBuilder
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $nativeCaDll)) {
+        throw "原生自定义动作编译失败（见上方输出）：$nativeCaDll"
+    }
+}
+
+$productTemplate = Get-Content (Join-Path $setupDir 'Product.wxs.template') -Raw
+
+# 许可协议正文与界面的中文文案。两者都不是可选装饰：
+#   license.rtf   —— 安装向导「最终用户许可协议」页的正文（WixUILicenseRtf 指向它）。
+#   WixUI_zh-CN.wxl —— 向导全部内置对话框的中文串；缺了它安装界面会退回英文。
+# 协议正文的维护入口只有 Setup\LicenseText.txt（纯文本）；license.rtf 是生成物、不进版本库，
+# 所以这里缺了就自动调 Setup\New-LicenseRtf.ps1 生成——否则「代码仓库干净时会话里打不出包」。
+$licenseRtfPath = Join-Path $setupDir 'license.rtf'
+$licenseTextPath = Join-Path $setupDir 'LicenseText.txt'
+$wxlPath = Join-Path $setupDir 'WixUI_zh-CN.wxl'
+foreach ($required in @($licenseTextPath, $wxlPath)) {
+    if (-not (Test-Path $required)) { throw "缺少安装向导文案文件：$required" }
+}
+$rtfGenerator = Join-Path $setupDir 'New-LicenseRtf.ps1'
+$rtfMissing = -not (Test-Path $licenseRtfPath)
+$rtfStale = (-not $rtfMissing) -and
+            ((Get-Item $licenseRtfPath).LastWriteTime -lt (Get-Item $licenseTextPath).LastWriteTime)
+if ($rtfMissing -or $rtfStale) {
+    if (-not (Test-Path $rtfGenerator)) { throw "缺少 RTF 生成脚本：$rtfGenerator" }
+    if ($rtfMissing) { Write-Host '  许可协议 RTF 不存在，正在从 LicenseText.txt 生成…' -ForegroundColor DarkGray }
+    else { Write-Host '  许可协议 RTF 比正文旧，正在重新生成…' -ForegroundColor DarkGray }
+    & pwsh -NoProfile -File $rtfGenerator
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $licenseRtfPath)) {
+        throw "生成许可协议 RTF 失败（见上方输出）：$licenseRtfPath"
+    }
+}
+$productWxs = $productTemplate.
+    Replace('{{VERSION}}', $Version).
+    Replace('{{MANUFACTURER}}', (ConvertTo-XmlText $Manufacturer)).
+    Replace('{{PRODUCTNAME}}', (ConvertTo-XmlText $ProductName)).
+    Replace('{{UPGRADECODE}}', (Get-StableGuid 'AutoLoginNet/UpgradeCode')).
+    Replace('{{NATIVECAPATH}}', (ConvertTo-XmlText $nativeCaDll)).
+    Replace('{{ICONPATH}}', (ConvertTo-XmlText $iconPath)).
+    Replace('{{LICENSERTF}}', (ConvertTo-XmlText $licenseRtfPath))
+$productPath = Join-Path $objDir 'Product.wxs'
+Set-Content -Path $productPath -Value $productWxs -Encoding UTF8
+
+# --------------------------------------------------------------- 4) 编译
+Write-Step "编译 MSI"
+$wix = Join-Path $env:USERPROFILE '.dotnet\tools\wix.exe'
+if (-not (Test-Path $wix)) { $wix = 'wix' }
+
+New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+if (Test-Path $msiPath) { Remove-Item $msiPath -Force }
+
+# -loc 是必须的，且 .wxl 不会被自动发现：实验证明把 .wxl 放在 .wxs 同目录里，WiX
+# 连看都不看（同目录放一个故意写坏的 .wxl，编译照样成功）；只有显式 -loc 才会生效。
+& $wix build $productPath $installWxs -arch x64 -out $msiPath -bindpath $publishDir -ext WixToolset.UI.wixext -loc $wxlPath
+if ($LASTEXITCODE -ne 0) { throw "wix build 失败（退出码 $LASTEXITCODE）" }
+
+# WiX 会顺带产出 .wixpdb 调试数据库，它只用于分析安装包，不是可用产物，别留在交付目录里
+Get-ChildItem $outDir -Filter '*.wixpdb' -ErrorAction SilentlyContinue | Remove-Item -Force
+
+# ------------------------------------------------- 4.5) 安装包中文化断言（失败即中止）
+# 这几项没法靠“编译成功”证明，而中文界面又特别容易悄悄退回英文，所以在打包流程里
+# 直接读 MSI 的表来断言。COM 包装写在 Setup\Test-InstallerLocalization.ps1 里：
+# 函数一旦用 return 抛数组，PowerShell 会把单行结果拆成标量、取值全变空，
+# 单独成文件既好写也好单独跑（`pwsh -File Setup\Test-InstallerLocalization.ps1 -Msi <路径>`）。
+Write-Step "校验安装包中文化"
+$locReport = & (Join-Path $setupDir 'Test-InstallerLocalization.ps1') -Msi $msiPath -LicenseText (Join-Path $setupDir 'LicenseText.txt')
+$locFailures = @($locReport.Checks | Where-Object { -not $_.Ok })
+foreach ($check in $locReport.Checks) {
+    $mark = if ($check.Ok) { '  通过' } else { '  失败' }
+    $color = if ($check.Ok) { 'DarkGray' } else { 'Red' }
+    Write-Host "$mark  $($check.Name)  — $($check.Detail)" -ForegroundColor $color
+}
+if ($locFailures.Count -gt 0) { throw "安装包中文化校验失败（$($locFailures.Count) 项）" }
+
+# --------------------------------------------------------------- 5) 免安装压缩包
+# 与 MSI 同源的发布负载，解压即用（不需要管理员权限）。
+# 用 .NET 的 ZipFile 而不是 Compress-Archive：后者对同一批文件要慢数倍，
+# 且 Optimal 级别在这里压不出更小的结果。
+Write-Step "生成免安装压缩包"
+# 用架构短名（x64）而不是完整 RID（win-x64），与 MSI 的命名保持一致
+$archLabel = $RuntimeIdentifier -replace '^win-', ''
+$zipPath = Join-Path $outDir "AutoLoginNet-$Version-portable-$archLabel.zip"
+if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[System.IO.Compression.ZipFile]::CreateFromDirectory(
+    $publishDir,
+    $zipPath,
+    [System.IO.Compression.CompressionLevel]::Optimal,
+    $false)   # $false: 不把 publishDir 这一层目录名包进去
+
+$msi = Get-Item $msiPath
+$zip = Get-Item $zipPath
+$payloadMb = [math]::Round((Get-ChildItem $publishDir -Recurse -File | Measure-Object Length -Sum).Sum / 1MB, 1)
+
+Write-Host ""
+Write-Host "产物已生成：" -ForegroundColor Green
+Write-Host "  MSI      $([math]::Round($msi.Length / 1MB, 1)) MB  $($msi.Name)"
+Write-Host "  免安装包  $([math]::Round($zip.Length / 1MB, 1)) MB  $($zip.Name)"
+Write-Host "  解包后    $payloadMb MB  ($((Get-ChildItem $publishDir -Recurse -File).Count) 个文件)"
+Write-Host "  输出目录  $outDir"
