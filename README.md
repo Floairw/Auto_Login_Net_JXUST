@@ -1,5 +1,8 @@
 # Auto_Login_Net_JXUST
 
+纯ai编写，工具为Deepseek Harness,模型为deepseek v4.1f
+原本我写了个C#脚本自用，只有单纯的CLI界面，最近没事就用ai重写了，所以readme和changelog有包含旧版修改信息，无需在意，我没公开发表过。
+
 江西理工大学（JXUST）校园网 **Dr.COM ePortal** 认证客户端。基于 **WinUI 3（Windows App SDK）** 的桌面应用，一键认证、开机自动登录、DNS 优选与校内域名解析。
 
 > **第三方非官方软件**：与学校及学校网络中心、信息中心无隶属或授权关系。完整条款见仓库根目录 [免责声明.txt](免责声明.txt)（安装向导的许可协议页即此全文）。
@@ -15,11 +18,9 @@
 | 选它 | 文件 | 大小 | 目标机需预装 |
 | --- | --- | --- | --- |
 | **不确定目标机装过什么** | `AutoLoginNet-<版本>-was-fd-x64.msi`<br>`…-portable-was-fd-x64.zip` | 46.7 MB | **什么都不用装** |
-| 已装 Windows App Runtime 1.8 | `AutoLoginNet-<版本>-x64.msi`<br>`…-portable-x64.zip` | 31.3 MB | Windows App Runtime 1.8 |
 | 两个运行时都已装、只要最小包 | `AutoLoginNet-<版本>-fd-x64.msi`<br>`…-portable-fd-x64.zip` | 7.4 MB | Windows App Runtime 1.8 + .NET 10 |
 
 - **`-was-fd`（全内置）**：`.NET 10` 与 Windows App Runtime 原生层都在包里，目标是「拷到任何 Windows 10 1809+ 机器上都能跑」。
-- **默认版（自包含 .NET）**：`.NET` 随包提供，仍需系统的 Windows App Runtime。
 - **`-fd`（框架依赖）**：两个运行时都不带，体积最小。
 
 `.zip` 是免安装版：解压到任意目录直接运行 `AutoLoginNet.exe`，不写注册表。
