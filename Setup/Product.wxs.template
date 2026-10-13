@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  产品定义模板。占位符由 Setup\Build-Installer.ps1 替换后交给 WiX 编译；
+  文件清单（Install.wxs）由同一脚本自动收集生成。
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <Package
+      Name="{{PRODUCTNAME}}"
+      Manufacturer="{{MANUFACTURER}}"
+      Version="{{VERSION}}"
+      UpgradeCode="{{UPGRADECODE}}"
+      Language="2052"
+      Codepage="65001"
+      Scope="perMachine"
+      InstallerVersion="500"
+      Compressed="yes">
+
+    <SummaryInformation Description="{{PRODUCTNAME}} 安装程序" Manufacturer="{{MANUFACTURER}}" />
+
+    <!--
+      同产品升级：装新版前自动卸载旧版，避免残留旧文件。
+      注意：MajorUpgrade 只负责「卸载旧版」，它不会告诉你旧版装在哪里。
+      旧版安装目录由下面的 DetectPreviousInstallLocation 自定义动作负责搬运，
+      因此这里必须保留默认排程，让 FindRelatedProducts 正常填充
+      WIX_UPGRADE_DETECTED（自定义动作就是靠读取它才知道存在旧版）。
+
+      AllowSameVersionUpgrades="yes"：把「已装 2.0.8、又装 2.0.8」也当成升级。
+      不加这一条时生成的范围上界是**独占**的，同版本不会被认为是关联产品 ——
+      结果是并排装上第二份，而不是覆盖旧目录；开发期反复用同一个版本号自测必然撞上。
+      （另有 WIX_UPGRADE_DETECTED 的语义依赖：该属性非空才代表「存在旧版」，
+      自定义动作把它当作闸门，全新安装时不会去占用机器上别的产品线目录。）
+    -->
+    <MajorUpgrade DowngradeErrorMessage="已安装更新版本的 {{PRODUCTNAME}}，请先卸载旧版本。"
+                  AllowSameVersionUpgrades="yes" />
+
+    <!--
+      记录自己的安装目录，供将来（以及本产品后续版本）参考。
+
+      历史教训：1.0.0/2.0.7 的包都没有声明这个属性，于是 ARP 里 InstallLocation 一直是空的
+      （本机实测 429 个产品键里没有一个带 InstallLocation），想靠注册表搜索找旧目录根本无解。
+      这里补上，未来的版本才有据可查。
+
+      为什么用 SetProperty 而不是 <Property>：ARPINSTALLLOCATION 的值必须在**目录定型之后**
+      才写，否则存进去的是字面量 "[INSTALLFOLDER]"（WiX 会用 WIX1077 明确警告这一点）。
+      SetProperty 就是一条 type 51 的自定义动作，排到 CostFinalize 之后即可解析目录。
+    -->
+    <SetProperty Id="ARPINSTALLLOCATION"
+                 Value="[INSTALLFOLDER]"
+                 After="CostFinalize"
+                 Sequence="both" />
+
+    <!--
+      升级安装时定位旧版目录并覆盖安装（用户需求：装新版不要另起目录）。
+      为什么是自定义动作而不是 RegistrySearch：
+        ARP 的 InstallLocation 在本产品历史版本里根本没写过（1.0/2.0.x 都为空），
+        所以按该键做 AppSearch 永远搜不到东西，必须真的去读 MSI 自身的目录信息。
+      为什么用原生 DLL 而不是托管 CA：
+        WiX 4/5 的 SDK 已不再分发 DTF 的 WindowsInstaller 互操作程序集，
+        托管 CA 在打包环境里无法编译；原生 DLL 只依赖 msi.dll，任何机器都能跑。
+      动作在 CostFinalize 之前执行，改写 INSTALLFOLDER 后目录解析才会采用新值。
+    -->
+    <Binary Id="UpgradeLocationCa" SourceFile="{{NATIVECAPATH}}" />
+    <CustomAction Id="DetectPreviousInstallLocation"
+                  BinaryRef="UpgradeLocationCa"
+                  DllEntry="DetectPreviousInstallLocation"
+                  Execute="immediate"
+                  Return="ignore" />
+    <InstallExecuteSequence>
+      <Custom Action="DetectPreviousInstallLocation" Before="CostFinalize" Condition="1" />
+    </InstallExecuteSequence>
+    <InstallUISequence>
+      <Custom Action="DetectPreviousInstallLocation" Before="CostFinalize" Condition="1" />
+    </InstallUISequence>
+
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+    <Icon Id="AppIcon" SourceFile="{{ICONPATH}}" />
+
+    <!--
+      许可协议正文。WixToolset.UI.wixext 自带的 license.rtf 只是一段占位说明，
+      WixUI 的许可协议页（LicenseAgreementDlg 的 LicenseText 滚动框）读的就是它；
+      用同名 WixVariable 覆盖即可换成我们自己的协议，不需要自己画对话框。
+      （已实测：这样写会覆盖扩展内置的 wix-ir/license.rtf，编译后 MSI 的
+       Control 表里 LicenseText 内容就是本文件。）
+      协议正文的维护入口是 Setup\LicenseText.txt，改完跑 Setup\New-LicenseRtf.ps1 重新生成 RTF。
+    -->
+    <WixVariable Id="WixUILicenseRtf" Value="{{LICENSERTF}}" />
+
+    <!-- 应用自身以普通权限运行；需要管理员的操作由程序内部自提权 -->
+    <Feature Id="Main" Title="{{PRODUCTNAME}}" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppProgramMenuDir" Name="AutoLoginNet" />
+    </StandardDirectory>
+
+    <!-- 开始菜单快捷方式（按用户安装项，因此 KeyPath 用 HKCU 注册表值） -->
+    <Component Id="StartMenuShortcut" Directory="AppProgramMenuDir" Guid="*">
+      <Shortcut Id="StartMenuLink"
+                Name="{{PRODUCTNAME}}"
+                Description="校园网 Dr.COM ePortal 认证客户端"
+                Target="[INSTALLFOLDER]AutoLoginNet.exe"
+                WorkingDirectory="INSTALLFOLDER" />
+      <RemoveFolder Id="RemoveAppProgramMenuDir" Directory="AppProgramMenuDir" On="uninstall" />
+      <RegistryValue Root="HKCU" Key="Software\AutoLoginNet" Name="installed"
+                     Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+  </Package>
+</Wix>
