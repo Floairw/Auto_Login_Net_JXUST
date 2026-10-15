@@ -11,6 +11,8 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "AutoLoginNet.App", "AutoLog
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "AutoLoginNet.Tests", "AutoLoginNet.Tests\AutoLoginNet.Tests.csproj", "{A37354A5-4621-49F8-BEBC-A83F0747E300}"
 EndProject
+Project("{B7DD6F7E-DEF8-4E67-B5B7-07EF123DB6F0}") = "AutoLoginNet.Setup", "Setup\AutoLoginNet.Setup.wixproj", "{EC4F43CF-9019-4806-91A2-7709BC6439AF}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -33,6 +35,10 @@ Global
 		{A37354A5-4621-49F8-BEBC-A83F0747E300}.Debug|x64.Build.0 = Debug|Any CPU
 		{A37354A5-4621-49F8-BEBC-A83F0747E300}.Release|x64.ActiveCfg = Release|Any CPU
 		{A37354A5-4621-49F8-BEBC-A83F0747E300}.Release|x64.Build.0 = Release|Any CPU
+		{EC4F43CF-9019-4806-91A2-7709BC6439AF}.Debug|x64.ActiveCfg = Debug|x64
+		{EC4F43CF-9019-4806-91A2-7709BC6439AF}.Debug|x64.Build.0 = Debug|x64
+		{EC4F43CF-9019-4806-91A2-7709BC6439AF}.Release|x64.ActiveCfg = Release|x64
+		{EC4F43CF-9019-4806-91A2-7709BC6439AF}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

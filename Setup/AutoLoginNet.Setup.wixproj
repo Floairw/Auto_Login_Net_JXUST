@@ -1,0 +1,160 @@
+<Project Sdk="WixToolset.Sdk/5.0.2">
+  <!--
+    把「导出安装包」接进 MSBuild：Visual Studio 的生成菜单、dotnet build、VS MCP 的 build_solution
+    都能一键产出 MSI。流程与命令行脚本是同一套（不复制逻辑、不重写打包规则）：
+
+      生成前  -> Setup\Export-Installer.ps1 -PrepareOnly ：发布载荷 + 裁剪 + 生成 Setup\obj\*.wxs
+      编译    -> WiX SDK 编译 obj\Product.wxs + obj\Install.wxs（-loc 传中文 wxl，与命令行一致）
+      生成后  -> Setup\Build-Installer.ps1 -FinalizeMsi  ：中文化断言 + 落 dist 规范命名 + 免安装 ZIP
+
+    命令行脚本仍是唯一事实来源；本工程只负责把同样的步骤挂到 MSBuild 上，因此**不依赖 FireGiant
+    HeatWave 授权**——HeatWave（FireGiant.HeatWave.Dev17 v1.0.8）是按 NuGet 的 WixToolset.Sdk
+    工程类型（{b7dd6f7e-def8-4e67-b5b7-07ef123db6f0}）识别本工程的，纯命令行 dotnet build 同样可用。
+
+    用法：
+      dotnet build Setup\AutoLoginNet.Setup.wixproj -c Release                        # 自包含 .NET（默认）
+      dotnet build Setup\AutoLoginNet.Setup.wixproj -c Release -p:SetupFlavor=FrameworkDependent
+      dotnet build Setup\AutoLoginNet.Setup.wixproj -c Release -p:SetupFlavor=AllBundled
+      dotnet build Setup\AutoLoginNet.Setup.wixproj -c Release -p:SetupSkipPublish=true   # 复用已有载荷
+      dotnet build Setup\AutoLoginNet.Setup.wixproj -c Release -p:SetupSkipVerify=false   # 额外跑启动验证
+
+    注意：载荷固定按 Release 编译（见下面的 SetupPayloadConfiguration），与当前解决方案配置无关，
+    所以 -c Debug 只会让程序本体是 Debug，安装包内容仍是 Release 载荷 —— 不会出现「Debug 载荷
+    盖掉 dist 里 Release 那一对」的情况。
+  -->
+  <PropertyGroup>
+    <OutputName>AutoLoginNet.Setup</OutputName>
+    <OutputType>Package</OutputType>
+    <InstallerPlatform>x64</InstallerPlatform>
+
+    <!--
+      关掉 SDK 的默认通配。两个原因：
+        1) 本工程的 .wxs 全部在 obj 下由脚本生成；若不关，默认 **/*.wxs 通配会与显式 Include
+           撞成重复入口（实测报 WIX0089/WIX0090 Multiple entry sections）。
+        2) .wxl 若被默认 EmbeddedResource 通配收走，产物会落到 bin\<配置>\zh-cn\ 子目录；
+           关掉它并改用 CompilerAdditionalOptions 的 -loc，输出路径与命令行 `wix build -loc` 完全一致
+           （实测落在 bin\Release\AutoLoginNet.Setup.msi）。
+    -->
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <EnableDefaultEmbeddedResourceItems>false</EnableDefaultEmbeddedResourceItems>
+
+    <!--
+      交付形态（与命令行开关一一对应）：
+        SelfContained（默认）= 含 .NET 运行时，仍需系统 Windows App Runtime 1.8，约 31 MB；
+        FrameworkDependent   = 需预装 .NET 10 + Windows App Runtime 1.8，约 7 MB，产物名带 -fd；
+        AllBundled           = .NET 与 Windows App Runtime 都进包，零运行时依赖，约 150 MB，名带 -was-fd。
+    -->
+    <SetupFlavor Condition=" '$(SetupFlavor)' == '' ">SelfContained</SetupFlavor>
+    <!-- true = 复用 dist\AutoLoginNet（不重新发布/裁剪），只重新生成 WiX 源文件 -->
+    <SetupSkipPublish Condition=" '$(SetupSkipPublish)' == '' ">false</SetupSkipPublish>
+    <!--
+      默认跳过 Verify-PrunedPublish.ps1：那一步会真的启动应用并做 UI 自动化探测（数秒到数十秒，
+      且需要可交互桌面）。IDE 每次生成都跑它太重，所以 MSBuild 这条路径默认关；命令行直接跑
+      Export-Installer.ps1 时仍然是**默认开启**的。想在这里也跑就传 -p:SetupSkipVerify=false。
+    -->
+    <SetupSkipVerify Condition=" '$(SetupSkipVerify)' == '' ">true</SetupSkipVerify>
+
+    <!--
+      载荷配置固定为 Release，与解决方案当前配置无关。原因：发布目录固定是 dist\AutoLoginNet、
+      dist 产物名里也不带配置标记；如果跟着解决方案配置走，在 VS 里用 Debug 生成就会把 Debug 载荷
+      灌进 dist\AutoLoginNet 并盖上同名的 MSI/ZIP，与之前 Release 出的一对不一致（实测踩到过）。
+      要故意出 Debug 载荷的包，传 -p:SetupPayloadConfiguration=Debug 自己承担。
+    -->
+    <SetupPayloadConfiguration Condition=" '$(SetupPayloadConfiguration)' == '' ">Release</SetupPayloadConfiguration>
+
+    <SetupDir>$(MSBuildProjectDirectory)</SetupDir>
+    <RepoRoot>$(MSBuildProjectDirectory)\..</RepoRoot>
+    <GeneratedDir>$(MSBuildProjectDirectory)\obj</GeneratedDir>
+    <!-- 记录上一次准备载荷时用的交付形态，参与增量判断，见 StampSetupFlavor -->
+    <SetupFlavorStamp>$(GeneratedDir)\setup-flavor.txt</SetupFlavorStamp>
+
+    <!-- Export-Installer.ps1 认 -SelfContained / -FrameworkDependent / -WindowsAppSDKSelfContained -->
+    <SetupFlavorArg Condition=" '$(SetupFlavor)' == 'FrameworkDependent' ">-FrameworkDependent</SetupFlavorArg>
+    <SetupFlavorArg Condition=" '$(SetupFlavor)' == 'AllBundled' ">-WindowsAppSDKSelfContained</SetupFlavorArg>
+    <SetupFlavorArg Condition=" '$(SetupFlavor)' == 'SelfContained' ">-SelfContained</SetupFlavorArg>
+    <!-- Build-Installer.ps1 没有 -SelfContained（默认就是自包含），所以自包含形态这里传空 -->
+    <SetupBuildFlavorArg Condition=" '$(SetupFlavor)' == 'FrameworkDependent' ">-FrameworkDependent</SetupBuildFlavorArg>
+    <SetupBuildFlavorArg Condition=" '$(SetupFlavor)' == 'AllBundled' ">-WindowsAppSDKSelfContained</SetupBuildFlavorArg>
+    <SetupSkipVerifyArg Condition=" '$(SetupSkipVerify)' == 'true' ">-SkipVerify</SetupSkipVerifyArg>
+    <SetupSkipPublishArg Condition=" '$(SetupSkipPublish)' == 'true' ">-SkipPublish</SetupSkipPublishArg>
+
+    <!-- 与命令行的 `-loc` 等价。.wxl 不会被自动发现，必须显式传，否则安装向导退回英文。 -->
+    <CompilerAdditionalOptions>-loc &quot;$(SetupDir)\WixUI_zh-CN.wxl&quot;</CompilerAdditionalOptions>
+
+    <!--
+      PowerShell 宿主。Setup 下的脚本是无 BOM 的 UTF-8，且用到 PowerShell 7 语法（三元运算符），
+      Windows PowerShell 5.1 会把中文按 ANSI 代码页读成乱码 —— 所以必须用 pwsh 7 跑。
+      本机没有系统级 PowerShell 7（DSH 自带的那份不在 VS 的进程 PATH 里），因此按顺序探测：
+        1) 命令行显式指定：-p:PowerShellHost=<pwsh.exe 完整路径>
+        2) 系统级安装   %ProgramFiles%\PowerShell\7
+        3) 预览版安装   %ProgramFiles%\PowerShell\7-preview
+        4) Microsoft Store 别名
+        5) DSH 内置的 pwsh-win32-x64（本机可用的一份）
+        6) 裸 `pwsh`，即进程 PATH 里能找到（在 DSH 终端里跑 dotnet build 属于这种）
+      探测不到时 CheckPowerShellHost 会给出明确报错，而不是让 Exec 抛一句 "'pwsh' 不是内部或外部命令"。
+    -->
+    <PowerShellHost Condition=" '$(PowerShellHost)' == '' AND Exists('$(ProgramFiles)\PowerShell\7\pwsh.exe') ">$(ProgramFiles)\PowerShell\7\pwsh.exe</PowerShellHost>
+    <PowerShellHost Condition=" '$(PowerShellHost)' == '' AND Exists('$(ProgramFiles)\PowerShell\7-preview\pwsh.exe') ">$(ProgramFiles)\PowerShell\7-preview\pwsh.exe</PowerShellHost>
+    <PowerShellHost Condition=" '$(PowerShellHost)' == '' AND Exists('$(LOCALAPPDATA)\Microsoft\WindowsApps\pwsh.exe') ">$(LOCALAPPDATA)\Microsoft\WindowsApps\pwsh.exe</PowerShellHost>
+    <PowerShellHost Condition=" '$(PowerShellHost)' == '' AND Exists('$(USERPROFILE)\.dsh\profiles\desktop\node_modules\@dsh-ops\pwsh-win32-x64\bin\pwsh.exe') ">$(USERPROFILE)\.dsh\profiles\desktop\node_modules\@dsh-ops\pwsh-win32-x64\bin\pwsh.exe</PowerShellHost>
+    <PowerShellHost Condition=" '$(PowerShellHost)' == '' ">pwsh</PowerShellHost>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 中文安装向导界面。命令行用 `-ext WixToolset.UI.wixext`，这里等价地走包引用。 -->
+    <PackageReference Include="WixToolset.UI.wixext" Version="5.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 两个源文件都由 Setup\Build-Installer.ps1 生成（Install.wxs 是发布目录的组件清单） -->
+    <Compile Include="$(GeneratedDir)\Product.wxs" />
+    <Compile Include="$(GeneratedDir)\Install.wxs" />
+  </ItemGroup>
+
+  <!-- 增量判断的依据：应用源码或打包输入有变动才重新发布/裁剪/生成 -->
+  <ItemGroup>
+    <SetupGenerationInput Include="$(RepoRoot)\AutoLoginNet.App\**\*.*;$(RepoRoot)\AutoLoginNet.Core\**\*.*;$(RepoRoot)\AutoLoginNet.Windows\**\*.*"
+                          Exclude="$(RepoRoot)\**\bin\**;$(RepoRoot)\**\obj\**;$(RepoRoot)\**\.vs\**" />
+    <SetupGenerationInput Include="$(SetupDir)\Product.wxs.template;$(SetupDir)\LicenseText.txt;$(SetupDir)\WixUI_zh-CN.wxl;$(SetupDir)\PublishPruneRules.ps1;$(SetupDir)\Build-Installer.ps1;$(SetupDir)\Export-Installer.ps1;$(SetupDir)\Remove-UnusedPublishFiles.ps1;$(SetupDir)\CustomActions.Native\UpgradeLocation.cpp" />
+  </ItemGroup>
+
+  <!-- 先确认能拿到 PowerShell 7，免得报出 "'pwsh' 不是内部或外部命令" 这种没头绪的错误 -->
+  <Target Name="CheckPowerShellHost" BeforeTargets="PrepareSetupSources">
+    <Exec Condition=" '$(PowerShellHost)' == 'pwsh' "
+          Command="pwsh -NoProfile -NonInteractive -Command &quot;exit 0&quot;"
+          ContinueOnError="true" StandardOutputImportance="low" StandardErrorImportance="low">
+      <Output TaskParameter="ExitCode" PropertyName="_PwshProbeExitCode" />
+    </Exec>
+    <Error Condition=" '$(PowerShellHost)' == 'pwsh' AND '$(_PwshProbeExitCode)' != '0' "
+           Text="找不到 PowerShell 7（pwsh）。Setup 下的脚本是无 BOM 的 UTF-8 且用了 PowerShell 7 语法，Windows PowerShell 5.1 会把中文读成乱码，所以不能用它代替。请安装 PowerShell 7（winget install Microsoft.PowerShell），或用 -p:PowerShellHost=&lt;pwsh.exe 的完整路径&gt; 指定。" />
+  </Target>
+
+  <!--
+    交付形态参与增量判断。
+    不这么做的话：先用默认形态生成过，再带 -p:SetupFlavor=FrameworkDependent 生成，
+    PrepareSetupSources 会因为 obj 下的 .wxs 比源码新而被判定「已是最新」直接跳过，
+    于是拿自包含载荷去印 -fd 的名字（静默产出错包）。Build-Installer.ps1 的形态自检会拦下它，
+    但正确做法是形态一换就重新准备载荷：这里把形态写进一个时间戳文件，并把它算进 Inputs。
+  -->
+  <Target Name="StampSetupFlavor">
+    <PropertyGroup>
+      <_RecordedSetupFlavor Condition=" Exists('$(SetupFlavorStamp)') ">$([System.IO.File]::ReadAllText('$(SetupFlavorStamp)').Trim())</_RecordedSetupFlavor>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(SetupFlavorStamp)" Lines="$(SetupFlavor)" Overwrite="true"
+                      Condition=" '$(_RecordedSetupFlavor)' != '$(SetupFlavor)' " />
+  </Target>
+
+  <Target Name="PrepareSetupSources" BeforeTargets="CoreCompile"
+          DependsOnTargets="StampSetupFlavor"
+          Inputs="@(SetupGenerationInput);$(SetupFlavorStamp)"
+          Outputs="$(GeneratedDir)\Product.wxs;$(GeneratedDir)\Install.wxs">
+    <Message Importance="high" Text="==&gt; 准备安装包源文件（$([MSBuild]::Unescape('$(SetupFlavor)'))）" />
+    <Exec Command="&quot;$(PowerShellHost)&quot; -NoProfile -NonInteractive -File &quot;$(SetupDir)\Export-Installer.ps1&quot; -PrepareOnly $(SetupFlavorArg) -Configuration $(SetupPayloadConfiguration) $(SetupSkipVerifyArg) $(SetupSkipPublishArg)" />
+  </Target>
+
+  <Target Name="FinalizeSetupArtifacts" AfterTargets="Build">
+    <Message Importance="high" Text="==&gt; 安装包校验与 dist 落盘：$(TargetDir)$(TargetFileName)" />
+    <Exec Command="&quot;$(PowerShellHost)&quot; -NoProfile -NonInteractive -File &quot;$(SetupDir)\Build-Installer.ps1&quot; -FinalizeMsi &quot;$(TargetDir)$(TargetFileName)&quot; $(SetupBuildFlavorArg) -Configuration $(SetupPayloadConfiguration)" />
+  </Target>
+</Project>

@@ -52,6 +52,14 @@
 .PARAMETER Configuration
     构建配置，默认 Release。
 
+.PARAMETER PrepareOnly
+    只做准备：编译原生自定义动作 → 发布 → 裁剪 → 生成 WiX 源文件（Setup\obj\*.wxs），然后停下，
+    把编译交给 Setup\AutoLoginNet.Setup.wixproj（MSBuild + WiX SDK）。用于 .wixproj 的生成前步骤。
+
+.PARAMETER SkipPublish
+    与 -PrepareOnly 同用：复用已发布并裁剪好的 dist\AutoLoginNet，不重新发布/裁剪，只重新生成
+    WiX 源文件（.wixproj 的增量构建走这条，避免每次生成都重新发布上百 MB 载荷）。
+
 .EXAMPLE
     pwsh -NoProfile -File Setup\Export-Installer.ps1
 
@@ -66,6 +74,10 @@
 
 .EXAMPLE
     pwsh -NoProfile -File Setup\Export-Installer.ps1 -BundleRuntime
+
+.EXAMPLE
+    # 只准备 WiX 源文件（.wixproj 的生成前步骤；-SkipPublish 表示复用已有载荷）
+    pwsh -NoProfile -File Setup\Export-Installer.ps1 -PrepareOnly -SelfContained -SkipVerify -SkipPublish
 #>
 [CmdletBinding()]
 param(
@@ -77,6 +89,11 @@ param(
     [switch]$SkipVerify,
     [switch]$Desktop,
     [switch]$BundleRuntime,
+    # 只做准备：编译原生自定义动作 → 发布 → 裁剪 → 生成 WiX 源文件，然后停下，把编译交给
+    # Setup\AutoLoginNet.Setup.wixproj（MSBuild + WiX SDK）。用于 .wixproj 的生成前步骤。
+    [switch]$PrepareOnly,
+    # 与 -PrepareOnly 同用：复用现有发布目录，不重新发布/裁剪，只重新生成 WiX 源文件。
+    [switch]$SkipPublish,
     [string]$Configuration = 'Release'
 )
 
@@ -95,6 +112,16 @@ function Write-Step([string]$Text) {
     Write-Host "==> $Text" -ForegroundColor Cyan
 }
 
+# 必须跑在 PowerShell 7 上：本脚本是无 BOM 的 UTF-8，Windows PowerShell 5.1 会按 ANSI 代码页读它，
+# 中文（产品名、安装向导文案）会整体乱码，写进 MSI 就是乱码产品名。宁可在这里直接报错。
+if ($PSVersionTable.PSEdition -ne 'Core') {
+    throw "需要 PowerShell 7（pwsh）运行本脚本；当前宿主是 Windows PowerShell $($PSVersionTable.PSVersion)——它会按 ANSI 代码页读取无 BOM 的 UTF-8 脚本，中文将全部乱码。"
+}
+# 子脚本一律用「当前宿主」启动，而不是裸写 `pwsh`：从 Visual Studio 的生成菜单触发时，进程 PATH 里
+# 未必有 pwsh（本机就没装系统级 PowerShell 7），裸 `pwsh` 会解析不到。
+$pwshExe = Join-Path $PSHOME 'pwsh.exe'
+if (-not (Test-Path -LiteralPath $pwshExe)) { $pwshExe = (Get-Process -Id $PID).Path }
+
 # ---------------------------------------------------------------- 版本号
 if (-not $Version) {
     [xml]$csproj = Get-Content -LiteralPath $projectPath -Raw
@@ -112,6 +139,9 @@ if ($FrameworkDependent -and $SelfContained) {
 if ($WindowsAppSDKSelfContained -and ($FrameworkDependent -or $SelfContained)) {
     throw '-WindowsAppSDKSelfContained 与 -FrameworkDependent / -SelfContained 互斥：一次只能导出一种交付形态。'
 }
+if ($SkipPublish -and -not $PrepareOnly) {
+    throw '-SkipPublish 只与 -PrepareOnly 一起用（语义：复用已发布并裁剪好的载荷，只重新生成 WiX 源文件）。'
+}
 
 # 三种形态共用同一套流程，只用后缀区分文件名，这样各版可以同时躺在 dist 里
 $flavorSuffix = if ($WindowsAppSDKSelfContained) { '-was-fd' } elseif ($FrameworkDependent) { '-fd' } else { '' }
@@ -127,6 +157,28 @@ Write-Host "交付形态：$flavorLabel"
 $msiPath = Join-Path $distDir "AutoLoginNet-$Version$flavorSuffix-x64.msi"
 $zipPath = Join-Path $distDir "AutoLoginNet-$Version-portable$flavorSuffix-x64.zip"
 
+# -PrepareOnly -SkipPublish：载荷已发布并裁剪好，只重新生成 WiX 源文件（.wixproj 增量构建走这条，
+# 免得每次 IDE 生成都重新发布上百 MB）。这条路径连原生自定义动作检查都不做——生成 Product.wxs 时
+# Build-Installer.ps1 自己会检查并按需重编原生 DLL。
+if ($PrepareOnly -and $SkipPublish) {
+    if (-not (Test-Path -LiteralPath $publishDir)) {
+        throw "找不到发布目录 $publishDir —— -SkipPublish 要求载荷已就绪；请先跑一次不带 -SkipPublish 的 -PrepareOnly。"
+    }
+    Write-Step '生成 WiX 源文件（复用现有发布目录，编译交给 MSBuild）'
+    $genArgs = @{ Version = $Version; SkipPublish = $true; GenerateOnly = $true }
+    if ($FrameworkDependent) { $genArgs['FrameworkDependent'] = $true }
+    if ($WindowsAppSDKSelfContained) { $genArgs['WindowsAppSDKSelfContained'] = $true }
+    & $pwshExe -NoProfile -File (Join-Path $PSScriptRoot 'Build-Installer.ps1') @genArgs
+    if ($LASTEXITCODE -ne 0) { throw "生成 WiX 源文件失败，退出码 $LASTEXITCODE" }
+    return [PSCustomObject]@{
+        Version  = $Version
+        Products = @()
+        Pruned   = $true
+        Runtimes = @()
+        Prepared = $true
+    }
+}
+
 # ---------------------------------------------------------------- 1. 原生自定义动作
 Write-Step '检查原生自定义动作'
 $needRebuild = -not (Test-Path -LiteralPath $nativeCaDll)
@@ -136,7 +188,7 @@ if (-not $needRebuild) {
 if ($needRebuild) {
     Write-Host '原生自定义动作缺失或已过期，正在编译…'
     $builder = Join-Path $PSScriptRoot 'Build-NativeCustomActions.ps1'
-    & pwsh -NoProfile -File $builder -Configuration $Configuration
+    & $pwshExe -NoProfile -File $builder -Configuration $Configuration
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $nativeCaDll)) {
         throw '原生自定义动作编译失败——拒绝产出「装得上但升级时另起目录」的安装包'
     }
@@ -215,13 +267,30 @@ else {
     }
 }
 
-# ---------------------------------------------------------------- 4. 生成 MSI + ZIP
-Write-Step '生成 MSI 与免安装 ZIP'
+# ---------------------------------------------------------------- 4. 生成 MSI + ZIP（或只生成源文件）
 $installer = Join-Path $PSScriptRoot 'Build-Installer.ps1'
 $installerArgs = @{ Version = $Version; SkipPublish = $true }
 if ($FrameworkDependent) { $installerArgs['FrameworkDependent'] = $true }
 if ($WindowsAppSDKSelfContained) { $installerArgs['WindowsAppSDKSelfContained'] = $true }
-& pwsh -NoProfile -File $installer @installerArgs
+
+if ($PrepareOnly) {
+    # 只生成 WiX 源文件，编译交给 MSBuild 的 Setup\AutoLoginNet.Setup.wixproj。
+    # 产出（断言、dist 规范命名、免安装 ZIP）由该工程的生成后步骤调 Build-Installer.ps1 -FinalizeMsi 补完。
+    Write-Step '生成 WiX 源文件（编译交给 MSBuild）'
+    $installerArgs['GenerateOnly'] = $true
+    & $pwshExe -NoProfile -File $installer @installerArgs
+    if ($LASTEXITCODE -ne 0) { throw "生成 WiX 源文件失败，退出码 $LASTEXITCODE" }
+    return [PSCustomObject]@{
+        Version  = $Version
+        Products = @()
+        Pruned   = (-not $SkipPrune)
+        Runtimes = @()
+        Prepared = $true
+    }
+}
+
+Write-Step '生成 MSI 与免安装 ZIP'
+& $pwshExe -NoProfile -File $installer @installerArgs
 if ($LASTEXITCODE -ne 0) { throw "生成安装包失败，退出码 $LASTEXITCODE" }
 
 # ---------------------------------------------------------------- 5. 汇总

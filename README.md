@@ -3,8 +3,6 @@
 江西理工大学（JXUST）校园网 **Dr.COM ePortal** 认证客户端。基于 **WinUI 3（Windows App SDK）** 的桌面应用，一键认证、开机自动登录、DNS 优选与校内域名解析。
 
 > **第三方非官方软件**：与学校及学校网络中心、信息中心无隶属或授权关系。完整条款见仓库根目录 [免责声明.txt](免责声明.txt)（安装向导的许可协议页即此全文）。
->
-> v2.0 是彻底重写版：界面迁移到 WinUI 3、核心逻辑重新分层、修正若干可用性与安全缺陷。逐版本改动见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 
@@ -101,7 +99,8 @@ AutoLoginNet.App       # WinUI 3 界面（net10.0-windows10.0.19041.0）
 
 AutoLoginNet.Tests     # 单元测试（MSTest，181 个用例）
 
-Setup/                 # 打包与安装脚本（见「构建」）
+Setup/                 # 打包与安装脚本 + WiX 工程（见「构建」）
+                       #   AutoLoginNet.Setup.wixproj：接进解决方案，VS / 命令行一键出 MSI
 ```
 
 依赖方向严格单向：`App → Windows → Core`。Core 不引用任何 Windows API，因此认证解析、凭据格式、日志脱敏等关键逻辑都能在测试中直接验证。
@@ -117,6 +116,8 @@ dotnet build Auto_Login_Net_JXUST.sln -c Release
 ```
 
 产物：`AutoLoginNet.App\bin\x64\Release\net10.0-windows10.0.19041.0\win-x64\AutoLoginNet.exe`
+
+> 解决方案里还挂着 `Setup\AutoLoginNet.Setup.wixproj`，所以这条命令会**顺带产出安装包**（发布 → 裁剪 → 出 MSI/ZIP，约 50 秒）。只想编译程序、不打包就单独构建 `AutoLoginNet.App`。
 
 > 该产物是**非打包 + 框架依赖**形态（csproj 里 `SelfContained` 与 `WindowsAppSDKSelfContained` 均为 `false`），本机开发跑得动是因为开发机装了运行时。命令行上的 `--self-contained` 会覆盖 csproj 的 `<SelfContained>`，所以三种交付形态全靠打包脚本显式传参区分。
 
@@ -149,6 +150,8 @@ pwsh -NoProfile -File .\Setup\Build-Installer.ps1 -SkipPublish -FrameworkDepende
 
 常用参数：`-Version 2.1.0`（默认读 csproj）、`-SkipPrune` / `-SkipVerify`（排查用）、`-BundleRuntime`（连带运行时安装器）、`-Desktop`（复制到桌面）。
 
+另有三个开关是给 MSBuild 工程复用的（见下一节），直接手跑一般用不到：`Export-Installer.ps1 -PrepareOnly`（只准备载荷与 WiX 源文件）、`Build-Installer.ps1 -GenerateOnly -SkipPublish`（只生成 WiX 源文件）、`Build-Installer.ps1 -FinalizeMsi <MSI 路径>`（定稿并落盘一个外部编译好的 MSI）。
+
 **实测体积（2.0.8）**：
 
 | 形态 | 发布目录 | 裁剪后 | MSI | ZIP |
@@ -165,6 +168,28 @@ pwsh -NoProfile -File .\Setup\Build-Installer.ps1 -SkipPublish -FrameworkDepende
 - `Microsoft.UI.Xaml.Phone.dll`、`WinUIEdit.dll`、`marshal.dll`、`MRU.dll`、`*.winmd` 等**不能删**，删了启动即失败；`en-us` 语言目录也不能删（WinUI 按目录名加载，删了崩溃）。
 - 裁剪只做有证据的删除（程序集引用闭包、内嵌 Reg-Free WinRT 清单、源码 grep），规则与理由见 `Setup\PublishPruneRules.ps1`。
 - `AutoLoginNet.pri` 与 `App.xbf` 缺失会导致加载 XAML 时崩溃，构建阶段直接报错，不会产出坏包。
+
+### 在 Visual Studio / MSBuild 里一键出包
+
+`Setup\AutoLoginNet.Setup.wixproj` 是 SDK 式 WiX v5 工程，已经加进 `Auto_Login_Net_JXUST.sln`。
+它**不重写打包规则**，只把命令行那几步挂到 MSBuild 上：生成前跑 `Export-Installer.ps1 -PrepareOnly`（编译原生自定义动作 → `dotnet publish` → 裁剪 → 生成 `Setup\obj\Product.wxs` / `Install.wxs`），WiX SDK 编译出 MSI，生成后再跑 `Build-Installer.ps1 -FinalizeMsi`（形态自检 → 中文化断言 → 落 `dist\` 规范命名 → 免安装 ZIP）。于是 Visual Studio 的「生成解决方案」、`dotnet build`、VS MCP 的 `build_solution` 与命令行脚本产出的是同一套产物。
+
+```powershell
+# 在 VS 里直接「生成解决方案」即可；命令行等价于：
+dotnet build Setup\AutoLoginNet.Setup.wixproj -c Release                                   # 自包含（默认）
+dotnet build Setup\AutoLoginNet.Setup.wixproj -c Release -p:SetupFlavor=FrameworkDependent # -fd
+dotnet build Setup\AutoLoginNet.Setup.wixproj -c Release -p:SetupFlavor=AllBundled         # -was-fd
+```
+
+- **交付形态**：`-p:SetupFlavor=` 取 `SelfContained`（默认）/ `FrameworkDependent` / `AllBundled`。形态一变会强制重新准备载荷；万一载荷与要求的形态不符（例如复用旧载荷），`-FinalizeMsi` 会直接报错，绝不会印出名字和内容对不上的包。
+- **载荷固定按 Release 编译**：解决方案当前配置只影响程序自身，安装包内容永远是 Release 载荷。否则在 VS 里用 Debug 生成，会把 Debug 载荷灌进 `dist\AutoLoginNet`、并盖上与之前 Release 那一对同名的 MSI/ZIP（实测踩到过）。真要出 Debug 载荷的包，用 `-p:SetupPayloadConfiguration=Debug`。
+- **复用已有载荷**：`-p:SetupSkipPublish=true`（跳过发布与裁剪，只用现有 `dist\AutoLoginNet`）。
+- **默认跳过「裁剪后可用性验证」**：那一步会真的启动应用做 UI 自动化探测，IDE 里每次生成都跑太重；想跑就加 `-p:SetupSkipVerify=false`。命令行直接跑 `Export-Installer.ps1` 时它仍然是默认开启的。
+- **增量**：应用源码或打包输入没变就整段跳过（不重新发布/裁剪/编译），实测重复生成 2 秒；改了源码或换了形态才重跑。
+- **前提**：机器上有 PowerShell 7（`pwsh`）。脚本是无 BOM 的 UTF-8 且用了 PowerShell 7 语法，**不能用 Windows PowerShell 5.1 代替**；没有 `pwsh` 时工程会先探测再给出明确报错，也可以用 `-p:PowerShellHost=D:\path\pwsh.exe` 指定。
+- **不需要任何 WiX 的 VS 扩展**：SDK 式 `.wixproj` 靠 NuGet 还原（`WixToolset.Sdk` / `WixToolset.UI.wixext`），`dotnet build` 就能出 MSI。反过来，装成 WiX **v3** 的 Votive 扩展对本项目没用（它按 v3 语法提供 IntelliSense，编译不了 v4/v5 语法的 `Product.wxs.template`）。
+- 新加入解决方案的工程，要先在 VS 里**重新加载解决方案**才会出现。
+- WiX 的直接产物是 `Setup\bin\<配置>\AutoLoginNet.Setup.msi`，`-FinalizeMsi` 再把它校验、复制成 `dist\AutoLoginNet-<版本>[-fd|-was-fd]-x64.msi` 并配套生成免安装 ZIP。
 
 ### 安装包中文化是硬断言
 
@@ -293,4 +318,4 @@ dotnet test Auto_Login_Net_JXUST.sln -c Release
 
 ## 许可
 
-[MIT](LICENSE.txt)（仅指代码）。本工具为第三方非官方软件，使用条款以 [免责声明.txt](免责声明.txt) 为准。
+[MIT](LICENSE.txt)

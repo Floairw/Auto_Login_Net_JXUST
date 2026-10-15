@@ -38,7 +38,14 @@ param(
     # 三者共用同一 ProductCode/UpgradeCode，属同一产品的不同分发方式，不能同时装。
     [switch]$FrameworkDependent,
     [switch]$WindowsAppSDKSelfContained,
-    [switch]$SkipPublish
+    [switch]$SkipPublish,
+    # 只生成 WiX 源文件（Setup\obj\Install.wxs 与 Setup\obj\Product.wxs）就退出，把编译交给
+    # Setup\AutoLoginNet.Setup.wixproj（MSBuild + WiX SDK）。必须与 -SkipPublish 同用：
+    # 发布与裁剪归 Export-Installer.ps1 -PrepareOnly 管，避免两处各发布/裁剪一遍。
+    [switch]$GenerateOnly,
+    # 用外部（MSBuild 的 WiX 工程）已编译好的 MSI 定稿：跑中文化断言 → 复制成 dist 下的规范
+    # 文件名 → 打免安装 ZIP。用于 .wixproj 的生成后步骤，保证两边产出的断言与命名完全一致。
+    [string]$FinalizeMsi
 )
 
 $ErrorActionPreference = 'Stop'
@@ -65,8 +72,110 @@ $setupDir = $PSScriptRoot
 $objDir = Join-Path $setupDir 'obj'
 $outDir = Join-Path $repoRoot 'dist'
 $msiPath = Join-Path $outDir "AutoLoginNet-$Version$flavorSuffix-x64.msi"
+# 用架构短名（x64）而不是完整 RID（win-x64），与 MSI 的命名保持一致
+$archLabel = $RuntimeIdentifier -replace '^win-', ''
+$zipPath = Join-Path $outDir "AutoLoginNet-$Version-portable$flavorSuffix-$archLabel.zip"
 
 function Write-Step([string]$text) { Write-Host "==> $text" -ForegroundColor Cyan }
+
+# 必须跑在 PowerShell 7 上：本脚本是无 BOM 的 UTF-8，Windows PowerShell 5.1 会按 ANSI 代码页读它，
+# 中文（产品名「校园网认证客户端」、安装向导文案）会整体乱码，写进 MSI 就是乱码产品名。
+# 与其悄悄产出乱码包，不如在这里直接报错。
+if ($PSVersionTable.PSEdition -ne 'Core') {
+    throw "需要 PowerShell 7（pwsh）运行本脚本；当前宿主是 Windows PowerShell $($PSVersionTable.PSVersion)——它会按 ANSI 代码页读取无 BOM 的 UTF-8 脚本，中文将全部乱码。"
+}
+# 子脚本一律用「当前宿主」启动，而不是裸写 `pwsh`：从 Visual Studio 的生成菜单触发时，进程 PATH 里
+# 未必有 pwsh（本机就没装系统级 PowerShell 7），裸 `pwsh` 会解析不到。
+$pwshExe = Join-Path $PSHOME 'pwsh.exe'
+if (-not (Test-Path -LiteralPath $pwshExe)) { $pwshExe = (Get-Process -Id $PID).Path }
+
+if ($GenerateOnly -and -not $SkipPublish) {
+    throw '-GenerateOnly 必须与 -SkipPublish 一起用：发布与裁剪由 Export-Installer.ps1 -PrepareOnly 负责，本脚本只在已裁剪的发布目录上生成 WiX 源文件。'
+}
+if ($GenerateOnly -and $FinalizeMsi) { throw '-GenerateOnly 与 -FinalizeMsi 互斥。' }
+
+# ------------------------------------------------- 安装包中文化断言（失败即中止）
+# 这几项没法靠“编译成功”证明，而中文界面又特别容易悄悄退回英文，所以在打包流程里
+# 直接读 MSI 的表来断言。COM 包装写在 Setup\Test-InstallerLocalization.ps1 里：
+# 函数一旦用 return 抛数组，PowerShell 会把单行结果拆成标量、取值全变空，
+# 单独成文件既好写也好单独跑（`pwsh -File Setup\Test-InstallerLocalization.ps1 -Msi <路径>`）。
+function Assert-InstallerLocalization([string]$Msi) {
+    Write-Step '校验安装包中文化'
+    $report = & (Join-Path $setupDir 'Test-InstallerLocalization.ps1') -Msi $Msi -LicenseText (Join-Path $setupDir 'LicenseText.txt')
+    $failures = @($report.Checks | Where-Object { -not $_.Ok })
+    foreach ($check in $report.Checks) {
+        $mark = if ($check.Ok) { '  通过' } else { '  失败' }
+        $color = if ($check.Ok) { 'DarkGray' } else { 'Red' }
+        Write-Host "$mark  $($check.Name)  — $($check.Detail)" -ForegroundColor $color
+    }
+    if ($failures.Count -gt 0) { throw "安装包中文化校验失败（$($failures.Count) 项）" }
+}
+
+# --------------------------------------------------------------- 免安装压缩包
+# 与 MSI 同源的发布负载，解压即用（不需要管理员权限）。
+# 用 .NET 的 ZipFile 而不是 Compress-Archive：后者对同一批文件要慢数倍，
+# 且 Optimal 级别在这里压不出更小的结果。
+function New-PortableZip([string]$PublishDir, [string]$Zip) {
+    Write-Step '生成免安装压缩包'
+    if (Test-Path $Zip) { Remove-Item $Zip -Force }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::CreateFromDirectory(
+        $PublishDir,
+        $Zip,
+        [System.IO.Compression.CompressionLevel]::Optimal,
+        $false)   # $false: 不把 publishDir 这一层目录名包进去
+}
+
+function Show-InstallerSummary {
+    $msi = Get-Item $msiPath
+    $zip = Get-Item $zipPath
+    $payloadMb = [math]::Round((Get-ChildItem $publishDir -Recurse -File | Measure-Object Length -Sum).Sum / 1MB, 1)
+    Write-Host ""
+    Write-Host "产物已生成（$flavorLabel）：" -ForegroundColor Green
+    Write-Host "  MSI      $([math]::Round($msi.Length / 1MB, 1)) MB  $($msi.Name)"
+    Write-Host "  免安装包  $([math]::Round($zip.Length / 1MB, 1)) MB  $($zip.Name)"
+    Write-Host "  解包后    $payloadMb MB  ($((Get-ChildItem $publishDir -Recurse -File).Count) 个文件)"
+    Write-Host "  输出目录  $outDir"
+}
+
+# 发布目录内容必须与本次要求的形态一致，否则会把上一次导出的形态套上本次的文件名
+# （例如把「中间形态」印成「全内置」，或者拿自包含载荷去印 -fd 的名字）。
+# 两条路径都要跑：命令行 -SkipPublish 复用目录时，以及 -FinalizeMsi 定稿 MSBuild 产物时
+# ——后者尤其重要：MSBuild 的增量判断不看交付形态，形态一换载荷就可能还是上一次的。
+function Assert-PayloadFlavor {
+    $hasDotNetRuntime = Test-Path (Join-Path $publishDir 'coreclr.dll')
+    $hasAppSdkRuntime = Test-Path (Join-Path $publishDir 'Microsoft.ui.xaml.dll')
+    $expected = if ($WindowsAppSDKSelfContained) { @($true, $true) }
+    elseif ($FrameworkDependent) { @($false, $false) }
+    else { @($true, $false) }
+    if ($hasDotNetRuntime -ne $expected[0] -or $hasAppSdkRuntime -ne $expected[1]) {
+        throw ("发布目录与要求的形态不一致（期望 .NET运行时=$($expected[0]) / WindowsAppRuntime=$($expected[1])，" +
+            "实际 .NET运行时=$hasDotNetRuntime / WindowsAppRuntime=$hasAppSdkRuntime）。" +
+            "请去掉 -SkipPublish（MSBuild 侧用 -p:SetupSkipPublish=false）重新发布，或删掉 $publishDir 后重试。")
+    }
+}
+
+# ------------------------------------------------- 定稿外部编译的 MSI（.wixproj 生成后步骤）
+# 走这条路时 WiX 源文件由 MSBuild 编译，本脚本不再发布/裁剪/编译，只做「校验 + 落盘 + 打包」，
+# 从而保证 VS 生成菜单与命令行脚本产出的断言、文件名、ZIP 完全一致。
+if ($FinalizeMsi) {
+    if (-not (Test-Path -LiteralPath $FinalizeMsi)) {
+        throw "找不到 MSBuild 产出的 MSI：$FinalizeMsi（先构建 Setup\AutoLoginNet.Setup.wixproj）"
+    }
+    if (-not (Test-Path -LiteralPath $publishDir)) {
+        throw "找不到发布目录 $publishDir —— 免安装 ZIP 需要它。请先跑 Export-Installer.ps1 -PrepareOnly 准备载荷。"
+    }
+    Write-Host "==> 定稿 MSBuild 编译的安装包：$FinalizeMsi" -ForegroundColor Cyan
+    # 先确认载荷形态、再校验中文化、最后才落盘：dist 里永远不出现「形态不符」或「没过断言」的安装包
+    Assert-PayloadFlavor
+    Assert-InstallerLocalization $FinalizeMsi
+    New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+    Write-Step "复制到 dist 并规范命名"
+    Copy-Item -LiteralPath $FinalizeMsi -Destination $msiPath -Force
+    New-PortableZip -PublishDir $publishDir -Zip $zipPath
+    Show-InstallerSummary
+    return
+}
 
 # ---------------------------------------------------------------- 1) 发布
 if (-not $SkipPublish) {
@@ -103,18 +212,8 @@ foreach ($required in @('AutoLoginNet.pri', 'App.xbf')) {
     }
 }
 
-# 形态自检：-SkipPublish 复用已有发布目录时，目录内容必须与本次要求的形态一致，
-# 否则会把上一次导出的形态套上本次的文件名（例如把中间形态印成「全内置」）。
-$hasDotNetRuntime = Test-Path (Join-Path $publishDir 'coreclr.dll')
-$hasAppSdkRuntime = Test-Path (Join-Path $publishDir 'Microsoft.ui.xaml.dll')
-$expected = if ($WindowsAppSDKSelfContained) { @($true, $true) }
-elseif ($FrameworkDependent) { @($false, $false) }
-else { @($true, $false) }
-if ($hasDotNetRuntime -ne $expected[0] -or $hasAppSdkRuntime -ne $expected[1]) {
-    throw ("发布目录与要求的形态不一致（期望 .NET运行时=$($expected[0]) / WindowsAppRuntime=$($expected[1])，" +
-        "实际 .NET运行时=$hasDotNetRuntime / WindowsAppRuntime=$hasAppSdkRuntime）。" +
-        "请去掉 -SkipPublish 重新发布，或删掉 $publishDir 后重试。")
-}
+# 形态自检：-SkipPublish 复用已有发布目录时，目录内容必须与本次要求的形态一致
+Assert-PayloadFlavor
 
 # ------------------------------------------------- 2) 生成 WiX 组件清单
 Write-Step "收集文件并生成 WiX 组件清单"
@@ -249,7 +348,7 @@ if ($needsNativeBuild) {
         throw "缺少原生自定义动作构建脚本：$nativeCaBuilder"
     }
     Write-Host '  原生自定义动作缺失或已过期，正在编译…' -ForegroundColor DarkGray
-    & pwsh -NoProfile -File $nativeCaBuilder
+    & $pwshExe -NoProfile -File $nativeCaBuilder
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $nativeCaDll)) {
         throw "原生自定义动作编译失败（见上方输出）：$nativeCaDll"
     }
@@ -276,7 +375,7 @@ if ($rtfMissing -or $rtfStale) {
     if (-not (Test-Path $rtfGenerator)) { throw "缺少 RTF 生成脚本：$rtfGenerator" }
     if ($rtfMissing) { Write-Host '  许可协议 RTF 不存在，正在从 LicenseText.txt 生成…' -ForegroundColor DarkGray }
     else { Write-Host '  许可协议 RTF 比正文旧，正在重新生成…' -ForegroundColor DarkGray }
-    & pwsh -NoProfile -File $rtfGenerator
+    & $pwshExe -NoProfile -File $rtfGenerator
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $licenseRtfPath)) {
         throw "生成许可协议 RTF 失败（见上方输出）：$licenseRtfPath"
     }
@@ -291,6 +390,18 @@ $productWxs = $productTemplate.
     Replace('{{LICENSERTF}}', (ConvertTo-XmlText $licenseRtfPath))
 $productPath = Join-Path $objDir 'Product.wxs'
 Set-Content -Path $productPath -Value $productWxs -Encoding UTF8
+
+# ------------------------------------------------- 只生成源文件（.wixproj 生成前步骤）
+# WiX 源文件已就绪，编译交给 MSBuild/WiX SDK。这里必须停下：若继续用 wix.exe 再编一遍，
+# 就会产出第二个 %(CultureGroup) 路径下的 MSI，和 MSBuild 的产物抢 dist 里的同名文件。
+if ($GenerateOnly) {
+    Write-Host ""
+    Write-Host "WiX 源文件已生成（$flavorLabel）：" -ForegroundColor Green
+    Write-Host "  $installWxs"
+    Write-Host "  $productPath"
+    Write-Host "  发布目录  $publishDir（$((Get-ChildItem $publishDir -Recurse -File).Count) 个文件）"
+    exit 0
+}
 
 # --------------------------------------------------------------- 4) 编译
 Write-Step "编译 MSI"
@@ -309,44 +420,8 @@ if ($LASTEXITCODE -ne 0) { throw "wix build 失败（退出码 $LASTEXITCODE）"
 Get-ChildItem $outDir -Filter '*.wixpdb' -ErrorAction SilentlyContinue | Remove-Item -Force
 
 # ------------------------------------------------- 4.5) 安装包中文化断言（失败即中止）
-# 这几项没法靠“编译成功”证明，而中文界面又特别容易悄悄退回英文，所以在打包流程里
-# 直接读 MSI 的表来断言。COM 包装写在 Setup\Test-InstallerLocalization.ps1 里：
-# 函数一旦用 return 抛数组，PowerShell 会把单行结果拆成标量、取值全变空，
-# 单独成文件既好写也好单独跑（`pwsh -File Setup\Test-InstallerLocalization.ps1 -Msi <路径>`）。
-Write-Step "校验安装包中文化"
-$locReport = & (Join-Path $setupDir 'Test-InstallerLocalization.ps1') -Msi $msiPath -LicenseText (Join-Path $setupDir 'LicenseText.txt')
-$locFailures = @($locReport.Checks | Where-Object { -not $_.Ok })
-foreach ($check in $locReport.Checks) {
-    $mark = if ($check.Ok) { '  通过' } else { '  失败' }
-    $color = if ($check.Ok) { 'DarkGray' } else { 'Red' }
-    Write-Host "$mark  $($check.Name)  — $($check.Detail)" -ForegroundColor $color
-}
-if ($locFailures.Count -gt 0) { throw "安装包中文化校验失败（$($locFailures.Count) 项）" }
+Assert-InstallerLocalization $msiPath
 
 # --------------------------------------------------------------- 5) 免安装压缩包
-# 与 MSI 同源的发布负载，解压即用（不需要管理员权限）。
-# 用 .NET 的 ZipFile 而不是 Compress-Archive：后者对同一批文件要慢数倍，
-# 且 Optimal 级别在这里压不出更小的结果。
-Write-Step "生成免安装压缩包"
-# 用架构短名（x64）而不是完整 RID（win-x64），与 MSI 的命名保持一致
-$archLabel = $RuntimeIdentifier -replace '^win-', ''
-$zipPath = Join-Path $outDir "AutoLoginNet-$Version-portable$flavorSuffix-$archLabel.zip"
-if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
-
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-[System.IO.Compression.ZipFile]::CreateFromDirectory(
-    $publishDir,
-    $zipPath,
-    [System.IO.Compression.CompressionLevel]::Optimal,
-    $false)   # $false: 不把 publishDir 这一层目录名包进去
-
-$msi = Get-Item $msiPath
-$zip = Get-Item $zipPath
-$payloadMb = [math]::Round((Get-ChildItem $publishDir -Recurse -File | Measure-Object Length -Sum).Sum / 1MB, 1)
-
-Write-Host ""
-Write-Host "产物已生成（$flavorLabel）：" -ForegroundColor Green
-Write-Host "  MSI      $([math]::Round($msi.Length / 1MB, 1)) MB  $($msi.Name)"
-Write-Host "  免安装包  $([math]::Round($zip.Length / 1MB, 1)) MB  $($zip.Name)"
-Write-Host "  解包后    $payloadMb MB  ($((Get-ChildItem $publishDir -Recurse -File).Count) 个文件)"
-Write-Host "  输出目录  $outDir"
+New-PortableZip -PublishDir $publishDir -Zip $zipPath
+Show-InstallerSummary

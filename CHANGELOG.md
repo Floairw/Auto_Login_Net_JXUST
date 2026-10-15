@@ -38,6 +38,48 @@ v2.0 是一次彻底重构，v1.x 的历史记录保留在文件末尾。
 - 三种形态都**内含** `AutoLoginNet.pri` 与 `App.xbf`；`-fd` 版裁剪后仍有 24.9 MB 是
   `Microsoft.Windows.SDK.NET.dll`（WinRT 托管投影，再省无可省）。
 
+### 打包：接入 Visual Studio / MSBuild（生成即出包）
+
+- **新增 SDK 式 WiX 工程 `Setup\AutoLoginNet.Setup.wixproj`，并加入 `Auto_Login_Net_JXUST.sln`**：
+  在 VS 里点「生成解决方案」，或命令行 `dotnet build Setup\AutoLoginNet.Setup.wixproj -c Release`，
+  就能直接产出 MSI 与免安装 ZIP。它**不重写打包规则**，只是把命令行那几步挂到 MSBuild 上：
+  生成前 `Export-Installer.ps1 -PrepareOnly`（编译原生自定义动作 → `dotnet publish` → 裁剪 →
+  生成 `Setup\obj\Product.wxs` / `Install.wxs`）→ WiX SDK 编译 → 生成后 `Build-Installer.ps1 -FinalizeMsi`
+  （形态自检 → 中文化 13 项断言 → 落 `dist\` 规范命名 → 免安装 ZIP）。**不需要任何 WiX 的 VS 扩展**
+  （靠 NuGet 还原 `WixToolset.Sdk` / `WixToolset.UI.wixext` 即可）；反过来说，装成 WiX **v3** 的
+  Votive 扩展对本项目没有用——它按 v3 语法提供 IntelliSense，编译不了 v4/v5 语法的
+  `Setup\Product.wxs.template`。
+- 交付形态用属性切换：`-p:SetupFlavor=SelfContained`（默认，约 31 MB）/ `FrameworkDependent`（`-fd`，约 7 MB）/
+  `AllBundled`（`-was-fd`，约 47 MB）；`-p:SetupSkipPublish=true` 复用已有载荷。
+  形态一变会强制重新准备载荷，且 `-FinalizeMsi` 会比对载荷是否真与该形态相符，不符直接报错。
+- **`Build-NativeCustomActions.ps1` 修掉一个只在「被 MSBuild / IDE 拉起」时才暴露的失败**：
+  调用方进程的 `PATH` 里混进了不可用条目（本机实测 6 个：含 `"`、`%` 的畸形项与已不存在的目录），
+  `vcvars64.bat` 在这样的 `PATH` 下会直接报 `此时不应有 \common。`，`cl.exe` 随之以 255 退出。
+  现在先把 `PATH` 过滤成「存在、且不含 `"` 与 `%` 的目录」，再写一个临时 `.cmd` 依次执行
+  `call vcvars64.bat` 与 `cl.exe`（避免外面再套一层引号），最后统一检查退出码；
+  不可用条目数量被剔除的项都会打印出来。
+- **原生自定义动作改为编译到暂存目录再复制出来**：以前直接往 `bin\AutoLoginNet.SetupActions.Native.dll`
+  上覆盖，上一次的原始输出（`*.lib` / `*.exp` / `*.obj`）与 `selftest` 中间产物会残留在 `bin\` 里；
+  现在编译进 `bin\staging\`，成功后才复制成正式产物并清掉暂存目录。
+- **`.wixproj` 记住本次形态**：换 `SetupFlavor` 会在 `Setup\obj\setup-flavor.txt` 留戳并强制重跑准备步骤，
+  避免「增量跳过发布」把上一次形态的载荷配上这一次的文件名。实测：无改动时重复生成 **2.08 秒**
+  （跳过发布/裁剪/编译），换形态则自动重新发布。
+- **载荷固定按 Release 编译**（`SetupPayloadConfiguration`，默认 `Release`）：解决方案当前配置只决定
+  程序本体的编译配置，安装包内容永远是 Release 载荷。这条是踩出来的——在 VS 里用 Debug 生成时，原本
+  会 `dotnet publish -c Debug` 把 Debug 载荷灌进 `dist\AutoLoginNet`，再用它生成 MSI，并盖上与之前
+  Release 那一对同名的 `dist\AutoLoginNet-2.0.8-x64.msi` / `-portable-x64.zip`，于是 dist 里留下两份
+  互不相配的产物。要故意出 Debug 载荷的包就传 `-p:SetupPayloadConfiguration=Debug`。
+- **三个新脚本开关**（给 MSBuild 工程复用，手跑一般用不到）：`Export-Installer.ps1 -PrepareOnly`、
+  `Build-Installer.ps1 -GenerateOnly -SkipPublish`、`Build-Installer.ps1 -FinalizeMsi <MSI 路径>`。
+  命令行导出流程本身没变：`Export-Installer.ps1` 仍然默认跑「裁剪后启动验证」；
+  MSBuild 那条路默认跳过它（`-p:SetupSkipVerify=false` 可打开），因为它会真的启动应用做 UI 探测，
+  IDE 每次生成都跑太重。
+- 前提是机器上有 **PowerShell 7**（脚本是无 BOM 的 UTF-8 且用了 PS7 语法，**不能用 Windows PowerShell 5.1**）；
+  没有 `pwsh` 时 `.wixproj` 会先探测再给出明确报错，也可以用 `-p:PowerShellHost=<pwsh.exe 路径>` 指定。
+- 实测（Release / x64）：单独生成 `.wixproj` 55.1 秒，生成整个解决方案 47.0 秒；
+  默认自包含形态产出 `dist\AutoLoginNet-2.0.8-x64.msi`（32,832,588 B）与
+  `dist\AutoLoginNet-2.0.8-portable-x64.zip`（41,404,899 B），13 项中文化断言全过。
+
 ### 协议正文换成新版免责声明
 
 - **协议来源改为仓库根目录的 `免责声明.txt`**（64 行，用户提供的最新全文），同步一份到
