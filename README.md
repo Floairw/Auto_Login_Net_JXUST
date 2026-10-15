@@ -8,15 +8,16 @@
 
 ## 下载与安装
 
-安装包都是**简体中文向导**，装到 `Program Files`、自动创建开始菜单快捷方式，升级时自动卸载已安装的版本并原地覆盖。三者的界面和功能完全相同，**只有携带的运行时不同**，按目标机器情况选一个即可（同一 `UpgradeCode`，不能同时装）。
+安装包都是**简体中文向导**，装到 `Program Files`、自动创建开始菜单快捷方式，升级时自动卸载已安装的版本并原地覆盖。两种版本的界面和功能完全相同，**只有携带的运行时不同**，按目标机器情况选一个即可（同一 `UpgradeCode`，不能同时装）。
+
+**日常只出两种版本：全内置（`-was-fd`）与框架依赖（`-fd`）。** 早先那个「自包含 .NET」版（只带 .NET、仍要求系统装 Windows App Runtime，31.3 MB）已停止交付——它省下的 16 MB 换来的是「装不上就闪退」，不划算。
 
 | 选它 | 文件 | 大小 | 目标机需预装 |
 | --- | --- | --- | --- |
-| **不确定目标机装过什么** | `AutoLoginNet-<版本>-was-fd-x64.msi`<br>`…-portable-was-fd-x64.zip` | 46.7 MB | **什么都不用装** |
-| 已装 Windows App Runtime 1.8 | `AutoLoginNet-<版本>-x64.msi`<br>`…-portable-x64.zip` | 31.3 MB | Windows App Runtime 1.8 |
+| **不确定目标机装过什么（默认出这个）** | `AutoLoginNet-<版本>-was-fd-x64.msi`<br>`…-portable-was-fd-x64.zip` | 46.7 MB | **什么都不用装** |
 | 两个运行时都已装、只要最小包 | `AutoLoginNet-<版本>-fd-x64.msi`<br>`…-portable-fd-x64.zip` | 7.4 MB | Windows App Runtime 1.8 + .NET 10 |
 
-- **`-was-fd`（全内置）**：`.NET 10` 与 Windows App Runtime 原生层都在包里，目标是「拷到任何 Windows 10 1809+ 机器上都能跑」。
+- **`-was-fd`（全内置，默认）**：`.NET 10` 与 Windows App Runtime 原生层都在包里，目标是「拷到任何 Windows 10 1809+ 机器上都能跑」。
 - **`-fd`（框架依赖）**：两个运行时都不带，体积最小。
 
 `.zip` 是免安装版：解压到任意目录直接运行 `AutoLoginNet.exe`，不写注册表。
@@ -118,7 +119,7 @@ dotnet build Auto_Login_Net_JXUST.sln -c Release
 
 > 解决方案里还挂着 `Setup\AutoLoginNet.Setup.wixproj`，所以这条命令会**顺带产出安装包**（发布 → 裁剪 → 出 MSI/ZIP，约 50 秒）。只想编译程序、不打包就单独构建 `AutoLoginNet.App`。
 
-> 该产物是**非打包 + 框架依赖**形态（csproj 里 `SelfContained` 与 `WindowsAppSDKSelfContained` 均为 `false`），本机开发跑得动是因为开发机装了运行时。命令行上的 `--self-contained` 会覆盖 csproj 的 `<SelfContained>`，所以三种交付形态全靠打包脚本显式传参区分。
+> 该产物是**非打包 + 框架依赖**形态（csproj 里 `SelfContained` 与 `WindowsAppSDKSelfContained` 均为 `false`），本机开发跑得动是因为开发机装了运行时。命令行上的 `--self-contained` 会覆盖 csproj 的 `<SelfContained>`，所以两种交付形态全靠打包脚本显式传参区分。
 
 ### 打包安装包
 
@@ -129,14 +130,11 @@ dotnet tool install --global wix --version 5.0.2
 wix extension add -g WixToolset.UI.wixext/5.0.2
 ```
 
-一条命令完成「发布 → 裁剪 → 验证 → 出 MSI/ZIP」，三种形态各一条：
+一条命令完成「发布 → 裁剪 → 验证 → 出 MSI/ZIP」，两种形态各一条（**不加形态开关就是全内置**）：
 
 ```powershell
-# 全内置（含 .NET 与 Windows App Runtime，约 47 MB，文件名带 -was-fd）
-pwsh -NoProfile -File .\Setup\Export-Installer.ps1 -WindowsAppSDKSelfContained -Desktop
-
-# 自包含 .NET（默认，含 .NET 运行时）
-pwsh -NoProfile -File .\Setup\Export-Installer.ps1 -SelfContained -Desktop
+# 全内置（默认，含 .NET 与 Windows App Runtime，约 47 MB，文件名带 -was-fd）
+pwsh -NoProfile -File .\Setup\Export-Installer.ps1 -Desktop
 
 # 框架依赖（文件名带 -fd）
 pwsh -NoProfile -File .\Setup\Export-Installer.ps1 -FrameworkDependent -Desktop
@@ -144,6 +142,8 @@ pwsh -NoProfile -File .\Setup\Export-Installer.ps1 -FrameworkDependent -Desktop
 # 已有发布目录、只要 MSI/ZIP 时（形态必须与发布目录一致，脚本会自检）
 pwsh -NoProfile -File .\Setup\Build-Installer.ps1 -SkipPublish -FrameworkDependent
 ```
+
+> 早先的第三种形态「自包含 .NET」（只带 .NET，仍需系统 Windows App Runtime）已停止交付：`-SelfContained` 现在直接报错，不会再导出一个名字和内容都容易搞混的中间包。
 
 `Export-Installer.ps1` 依次做：编译原生自定义动作（升级时定位已安装目录）→ `dotnet publish`（按形态决定是否自包含）→ 按「运行时不会被加载」的证据裁剪（`Setup\PublishPruneRules.ps1`）→ 跑裁剪后可用性验证（`Setup\Verify-PrunedPublish.ps1`）→ 生成 MSI 与 ZIP → 打印大小与 SHA256。
 
@@ -155,8 +155,7 @@ pwsh -NoProfile -File .\Setup\Build-Installer.ps1 -SkipPublish -FrameworkDepende
 
 | 形态 | 发布目录 | 裁剪后 | MSI | ZIP |
 | --- | --- | --- | --- | --- |
-| 全内置（`-was-fd`） | 159.6 MB / 498 个文件 | **151.5 MB / 287 个文件** | **46.7 MB** | **59.8 MB** |
-| 自包含 .NET（默认） | 102.5 MB / 229 个文件 | **99.6 MB / 203 个文件** | **31.3 MB** | **39.5 MB** |
+| 全内置（`-was-fd`，默认） | 159.6 MB / 498 个文件 | **151.5 MB / 287 个文件** | **46.7 MB** | **59.8 MB** |
 | 框架依赖（`-fd`） | 36.8 MB / 51 个文件 | **34.6 MB / 25 个文件** | **7.4 MB** | **9.3 MB** |
 
 体积主要来自三块，与程序自身代码无关（程序自身约 2.2 MB）：`.NET 10` 运行时 63 MB、WinUI 原生层 50 MB、WinRT 托管投影 33 MB（其中 `Microsoft.Windows.SDK.NET.dll` 单个 23.7 MB，且**不能裁剪**——WinUI 3 + CsWinRT 按名字反射解析投影类型，`PublishTrimmed` 会让带 `x:Bind` 的页面直接崩）。
@@ -175,12 +174,11 @@ pwsh -NoProfile -File .\Setup\Build-Installer.ps1 -SkipPublish -FrameworkDepende
 
 ```powershell
 # 在 VS 里直接「生成解决方案」即可；命令行等价于：
-dotnet build Setup\AutoLoginNet.Setup.wixproj -c Release                                   # 自包含（默认）
+dotnet build Setup\AutoLoginNet.Setup.wixproj -c Release                                   # 全内置（默认）
 dotnet build Setup\AutoLoginNet.Setup.wixproj -c Release -p:SetupFlavor=FrameworkDependent # -fd
-dotnet build Setup\AutoLoginNet.Setup.wixproj -c Release -p:SetupFlavor=AllBundled         # -was-fd
 ```
 
-- **交付形态**：`-p:SetupFlavor=` 取 `SelfContained`（默认）/ `FrameworkDependent` / `AllBundled`。形态一变会强制重新准备载荷；万一载荷与所要求的形态不符，`-FinalizeMsi` 会直接报错，绝不会印出名字和内容对不上的包。
+- **交付形态**：`-p:SetupFlavor=` 取 `AllBundled`（默认，全内置）/ `FrameworkDependent`（`-fd`）。形态一变会强制重新准备载荷；万一载荷与所要求的形态不符，`-FinalizeMsi` 会直接报错，绝不会印出名字和内容对不上的包。`SelfContained` 已于 2026-10-15 停用，传了会报错。
 - **载荷固定按 Release 编译**：解决方案当前配置只影响程序自身，安装包内容永远是 Release 载荷。否则在 VS 里用 Debug 生成，会把 Debug 载荷灌进 `dist\AutoLoginNet`、并盖上与之前 Release 那一对同名的 MSI/ZIP（实测踩到过）。真要出 Debug 载荷的包，用 `-p:SetupPayloadConfiguration=Debug`。
 - **复用已有载荷**：`-p:SetupSkipPublish=true`（跳过发布与裁剪，只用现有 `dist\AutoLoginNet`）。
 - **默认跳过「裁剪后可用性验证」**：那一步会真的启动应用做 UI 自动化探测，IDE 里每次生成都跑太重；想跑就加 `-p:SetupSkipVerify=false`。命令行直接跑 `Export-Installer.ps1` 时它仍然是默认开启的。

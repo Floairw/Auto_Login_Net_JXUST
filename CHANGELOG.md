@@ -5,6 +5,25 @@ v2.0 是一次彻底重构，v1.x 的历史记录保留在文件末尾。
 
 ---
 
+## 2026-10-15 — 交付形态收敛为两种（全内置 / 框架依赖）
+
+**「自包含 .NET」版（31.3 MB：只带 .NET、但仍要求目标机装 Windows App Runtime 1.8）停止交付。**
+它省下的 16 MB 换来的是「目标机没装 Windows App Runtime 就闪退」，而全内置版已经能一次拷到任何
+Windows 10 1809+ 机器上跑；留着只在一个中间场景才用得上的包，只会让「这次该发哪个」成为每次都要解释的问题。
+
+- `Setup\Export-Installer.ps1` / `Setup\Build-Installer.ps1`：**不加形态开关即全内置**（`-was-fd`），
+  `-FrameworkDependent` 仍是 `-fd`。`-SelfContained` 开关保留，但传了直接报错——给出明确提示，
+  而不是悄悄按全内置导出一个名字和内容都容易搞混的包。
+- 产物命名随之固定为 `AutoLoginNet-<版本>-was-fd-x64.msi` 与 `AutoLoginNet-<版本>-fd-x64.msi`
+  （及对应的 `-portable-*.zip`、`prune-report-<版本>-*.txt`）。
+- `Setup\AutoLoginNet.Setup.wixproj`：`SetupFlavor` 默认值 `SelfContained` → `AllBundled`；
+  `-p:SetupFlavor=SelfContained` 会把 `-SelfContained` 传给脚本，由脚本报错。
+- 载荷形态自检（`Assert-PayloadFlavor`）改为两种：全内置要求 `coreclr.dll` 与 `Microsoft.ui.xaml.dll`
+  都在，框架依赖要求两者都不在。
+- README 的下载表、体积表与打包示例同步收敛为两行。
+
+---
+
 ## v2.0.8 — 2026-10-13
 
 > 相比 2.0.7 的变化：**同一版本提供三种载荷**（全内置 46.7 MB / 自包含 31.3 MB / 框架依赖 7.4 MB）、
@@ -13,6 +32,9 @@ v2.0 是一次彻底重构，v1.x 的历史记录保留在文件末尾。
 > 升级安装沿用 2.0.7 的做法：自动卸旧版并装回旧版所在目录。
 
 ### 安装包：三种交付形态（全内置 / 自包含 / 框架依赖）
+
+> 注：下表是 v2.0.8 发布时的形态。其中「自包含 .NET」一行已于 2026-10-15 停止交付（见文件开头条目），
+> 现在只出「全内置」与「框架依赖」两种。
 
 打包脚本支持三种载荷，文件名用 `-was-fd` / `-fd` 后缀区分，可同时躺在 `dist\` 里，
 共用同一 `UpgradeCode`（属同一产品的三种分发方式，不能同时安装）：

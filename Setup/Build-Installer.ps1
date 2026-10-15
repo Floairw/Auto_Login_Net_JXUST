@@ -4,18 +4,21 @@
 
 .DESCRIPTION
     流程：
-      1) dotnet publish 发布（默认自包含；-FrameworkDependent 时不带 .NET 运行时）
+      1) dotnet publish 发布（默认全内置；-FrameworkDependent 时不带任何运行时）
       2) 收集发布目录中的全部文件，生成 WiX 组件清单（Install.wxs）
       3) 用 WiX 编译出单个 MSI，并打一份免安装 ZIP
 
-    三种交付形态：
-      - 默认（自包含 .NET）：安装包约 31 MB，目标机需预装 Windows App Runtime 1.8。
+    只交付两种形态：
+      - 默认（全内置）：.NET 与 Windows App Runtime 都打进包，目标机零运行时依赖，
+        安装包约 47 MB，产物文件名带 -was-fd 后缀。不确定目标机装过什么就用这个。
       - -FrameworkDependent：安装包约 7 MB，目标机必须先装 .NET 10 与 Windows App Runtime 1.8，
         产物文件名带 -fd 后缀。
-      - -WindowsAppSDKSelfContained：全内置，安装包约 150 MB，目标机零运行时依赖，
-        产物文件名带 -was-fd 后缀。
-      三种形态的 ProductCode/UpgradeCode 相同，属同一产品的不同分发方式，不能同时安装；
+      两者 ProductCode/UpgradeCode 相同，属同一产品的不同分发方式，不能同时安装；
       文件名后缀不同，可同时放在 dist 里互不覆盖。
+
+    第三种「自包含 .NET」（只含 .NET、仍需系统预装 Windows App Runtime，约 31 MB）已停止交付：
+    它省下的空间有限，却把「装不上」的风险留给了用户。-SelfContained 现在直接报错，
+    避免又导出一个谁也说不清该发给谁的中间形态。
 
     之所以自己收集文件而不用 Heat：Heat 扩展的版本与 WiX 主工具版本强绑定
     （WixToolset.Heat 6.x 要求 WiX 6.x），而本机工具链是 WiX 5.x。
@@ -31,13 +34,15 @@ param(
     [string]$Version,
     [string]$Manufacturer = 'AutoLoginNet',
     [string]$ProductName = '校园网认证客户端',
-    # 三种交付形态共用同一份产品定义，只靠发布载荷与文件名后缀区分：
-    #   默认（不加开关）= 自包含 .NET：.NET 运行时进包，仍需系统预装 Windows App Runtime 1.8，约 31 MB；
-    #   -FrameworkDependent = 框架依赖：需预装 .NET 10 + Windows App Runtime 1.8，约 7 MB；
-    #   -WindowsAppSDKSelfContained = 全内置：.NET 与 Windows App Runtime 都进包，目标机零运行时依赖，约 150 MB。
-    # 三者共用同一 ProductCode/UpgradeCode，属同一产品的不同分发方式，不能同时装。
+    # 两种交付形态共用同一份产品定义，只靠发布载荷与文件名后缀区分：
+    #   默认（不加开关）= 全内置：.NET 与 Windows App Runtime 都进包，目标机零运行时依赖，约 47 MB；
+    #   -FrameworkDependent = 框架依赖：需预装 .NET 10 + Windows App Runtime 1.8，约 7 MB。
+    # 两者共用同一 ProductCode/UpgradeCode，属同一产品的不同分发方式，不能同时装。
     [switch]$FrameworkDependent,
+    # 全内置本身就是默认形态；保留这个开关只为兼容既有命令行与 Setup\AutoLoginNet.Setup.wixproj 里的显式写法。
     [switch]$WindowsAppSDKSelfContained,
+    # 已停止交付的形态。留着它只为给出明确报错，而不是悄悄按默认（全内置）导出一个内容不符合同名包。
+    [switch]$SelfContained,
     [switch]$SkipPublish,
     # 只生成 WiX 源文件（Setup\obj\Install.wxs 与 Setup\obj\Product.wxs）就退出，把编译交给
     # Setup\AutoLoginNet.Setup.wixproj（MSBuild + WiX SDK）。必须与 -SkipPublish 同用：
@@ -52,11 +57,13 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $projectPath = Join-Path $repoRoot 'AutoLoginNet.App\AutoLoginNet.App.csproj'
 
-# 文件名后缀：三种形态的产物必须能同时躺在 dist 里，否则后一次导出会覆盖前一次
-$flavorSuffix = if ($WindowsAppSDKSelfContained) { '-was-fd' } elseif ($FrameworkDependent) { '-fd' } else { '' }
-$flavorLabel = if ($WindowsAppSDKSelfContained) { '全内置（含 .NET 与 Windows App Runtime）' }
-elseif ($FrameworkDependent) { '框架依赖（需预装运行时）' }
-else { '自包含 .NET（需预装 Windows App Runtime）' }
+if ($SelfContained) {
+    throw '不再交付「自包含 .NET」形态（包内含 .NET，但仍要求目标机预装 Windows App Runtime，省不了多少空间却容易装不上）。现在只有两种交付形态：默认的「全内置」与 -FrameworkDependent。'
+}
+
+# 文件名后缀：两种形态的产物必须能同时躺在 dist 里，否则后一次导出会覆盖前一次
+$flavorSuffix = if ($FrameworkDependent) { '-fd' } else { '-was-fd' }
+$flavorLabel = if ($FrameworkDependent) { '框架依赖（需预装运行时）' } else { '全内置（含 .NET 与 Windows App Runtime）' }
 
 # 版本号以 csproj 为唯一来源。此前脚本里另写了一份 '2.0.5' 默认值，结果应用已到 v2.0.7
 # 而打出来的安装包仍是 2.0.5（安装包落后了两次功能改动）。未显式传 -Version 时一律读 csproj。
@@ -145,12 +152,12 @@ function Show-InstallerSummary {
 function Assert-PayloadFlavor {
     $hasDotNetRuntime = Test-Path (Join-Path $publishDir 'coreclr.dll')
     $hasAppSdkRuntime = Test-Path (Join-Path $publishDir 'Microsoft.ui.xaml.dll')
-    $expected = if ($WindowsAppSDKSelfContained) { @($true, $true) }
-    elseif ($FrameworkDependent) { @($false, $false) }
-    else { @($true, $false) }
+    $expected = if ($FrameworkDependent) { @($false, $false) } else { @($true, $true) }
     if ($hasDotNetRuntime -ne $expected[0] -or $hasAppSdkRuntime -ne $expected[1]) {
         throw ("发布目录与要求的形态不一致（期望 .NET运行时=$($expected[0]) / WindowsAppRuntime=$($expected[1])，" +
             "实际 .NET运行时=$hasDotNetRuntime / WindowsAppRuntime=$hasAppSdkRuntime）。" +
+            "全内置形态要求在 publish 时同时给 --self-contained true 与 -p:WindowsAppSDKSelfContained=true" +
+            "（只给后者会退化成「有 Windows App Runtime、没有 .NET」的中间形态）。" +
             "请去掉 -SkipPublish（MSBuild 侧用 -p:SetupSkipPublish=false）重新发布，或删掉 $publishDir 后重试。")
     }
 }
@@ -187,11 +194,11 @@ if (-not $SkipPublish) {
     #   false -> 框架依赖，只出应用（发布目录约 37 MB）
     $selfContainedArg = if ($FrameworkDependent) { 'false' } else { 'true' }
     $extraArgs = @()
-    if ($WindowsAppSDKSelfContained) {
-        # 把 Windows App Runtime 的原生层（Microsoft.ui.xaml.dll 等约 50 MB）也打进包，
+    if (-not $FrameworkDependent) {
+        # 全内置（默认形态）：把 Windows App Runtime 的原生层（Microsoft.ui.xaml.dll 等约 50 MB）也打进包，
         # 目标机零运行时依赖。注意：<WindowsAppSDKSelfContained> 不能只靠命令行打开——
         # 实测 -p:SelfContained=false -p:WindowsAppSDKSelfContained=true 会退化成
-        # 纯框架依赖（93.88 MB 的中间形态，Microsoft.ui.xaml.dll 仍在但 .NET 不在），
+        # 中间形态（93.88 MB：Microsoft.ui.xaml.dll 在、coreclr.dll 不在），
         # 所以这里必须同时给 --self-contained true 与 -p:WindowsAppSDKSelfContained=true。
         $extraArgs += '-p:WindowsAppSDKSelfContained=true'
     }

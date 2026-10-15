@@ -12,11 +12,11 @@
     工程类型（{b7dd6f7e-def8-4e67-b5b7-07ef123db6f0}）识别本工程的，纯命令行 dotnet build 同样可用。
 
     用法：
-      dotnet build Setup\AutoLoginNet.Setup.wixproj -c Release                        # 自包含 .NET（默认）
+      dotnet build Setup\AutoLoginNet.Setup.wixproj -c Release                        # 全内置（默认）
       dotnet build Setup\AutoLoginNet.Setup.wixproj -c Release -p:SetupFlavor=FrameworkDependent
-      dotnet build Setup\AutoLoginNet.Setup.wixproj -c Release -p:SetupFlavor=AllBundled
       dotnet build Setup\AutoLoginNet.Setup.wixproj -c Release -p:SetupSkipPublish=true   # 复用已有载荷
       dotnet build Setup\AutoLoginNet.Setup.wixproj -c Release -p:SetupSkipVerify=false   # 额外跑启动验证
+      # -p:SetupFlavor=SelfContained 已于 2026-10-15 停用：脚本会直接报错，只交付两种形态。
 
     注意：载荷固定按 Release 编译（见下面的 SetupPayloadConfiguration），与当前解决方案配置无关，
     所以 -c Debug 只会让程序本体是 Debug，安装包内容仍是 Release 载荷 —— 不会出现「Debug 载荷
@@ -40,12 +40,12 @@
     <EnableDefaultEmbeddedResourceItems>false</EnableDefaultEmbeddedResourceItems>
 
     <!--
-      交付形态（与命令行开关一一对应）：
-        SelfContained（默认）= 含 .NET 运行时，仍需系统 Windows App Runtime 1.8，约 31 MB；
-        FrameworkDependent   = 需预装 .NET 10 + Windows App Runtime 1.8，约 7 MB，产物名带 -fd；
-        AllBundled           = .NET 与 Windows App Runtime 都进包，零运行时依赖，约 150 MB，名带 -was-fd。
+      交付形态（与命令行开关一一对应，只保留两种）：
+        AllBundled（默认）  = .NET 与 Windows App Runtime 都进包，零运行时依赖，约 47 MB，名带 -was-fd；
+        FrameworkDependent  = 需预装 .NET 10 + Windows App Runtime 1.8，约 7 MB，产物名带 -fd。
+      SelfContained（只含 .NET、仍需系统 Windows App Runtime，约 31 MB）已停止交付：传了会由脚本报错。
     -->
-    <SetupFlavor Condition=" '$(SetupFlavor)' == '' ">SelfContained</SetupFlavor>
+    <SetupFlavor Condition=" '$(SetupFlavor)' == '' ">AllBundled</SetupFlavor>
     <!-- true = 复用 dist\AutoLoginNet（不重新发布/裁剪），只重新生成 WiX 源文件 -->
     <SetupSkipPublish Condition=" '$(SetupSkipPublish)' == '' ">false</SetupSkipPublish>
     <!--
@@ -69,13 +69,14 @@
     <!-- 记录上一次准备载荷时用的交付形态，参与增量判断，见 StampSetupFlavor -->
     <SetupFlavorStamp>$(GeneratedDir)\setup-flavor.txt</SetupFlavorStamp>
 
-    <!-- Export-Installer.ps1 认 -SelfContained / -FrameworkDependent / -WindowsAppSDKSelfContained -->
+    <!-- Export-Installer.ps1 认 -FrameworkDependent / -WindowsAppSDKSelfContained（-SelfContained 已停用） -->
     <SetupFlavorArg Condition=" '$(SetupFlavor)' == 'FrameworkDependent' ">-FrameworkDependent</SetupFlavorArg>
     <SetupFlavorArg Condition=" '$(SetupFlavor)' == 'AllBundled' ">-WindowsAppSDKSelfContained</SetupFlavorArg>
+    <!-- 停用形态照旧往下传，让 Export/Build 脚本自己抛出「不再交付」的明确错误 -->
     <SetupFlavorArg Condition=" '$(SetupFlavor)' == 'SelfContained' ">-SelfContained</SetupFlavorArg>
-    <!-- Build-Installer.ps1 没有 -SelfContained（默认就是自包含），所以自包含形态这里传空 -->
+    <!-- Build-Installer.ps1 里全内置就是默认（不加开关），所以只有框架依赖要传 -->
     <SetupBuildFlavorArg Condition=" '$(SetupFlavor)' == 'FrameworkDependent' ">-FrameworkDependent</SetupBuildFlavorArg>
-    <SetupBuildFlavorArg Condition=" '$(SetupFlavor)' == 'AllBundled' ">-WindowsAppSDKSelfContained</SetupBuildFlavorArg>
+    <SetupBuildFlavorArg Condition=" '$(SetupFlavor)' == 'SelfContained' ">-SelfContained</SetupBuildFlavorArg>
     <SetupSkipVerifyArg Condition=" '$(SetupSkipVerify)' == 'true' ">-SkipVerify</SetupSkipVerifyArg>
     <SetupSkipPublishArg Condition=" '$(SetupSkipPublish)' == 'true' ">-SkipPublish</SetupSkipPublishArg>
 

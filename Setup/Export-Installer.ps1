@@ -11,14 +11,15 @@
       5) 打印产物路径、大小与 SHA256；可选复制到桌面；
       6) 可选（-BundleRuntime）把 Setup\Runtime\ 下的运行时安装器一起放进 dist\Runtime\。
 
-    三种交付形态（同一份产品定义，只是载荷不同）：
-      - 默认（自包含 .NET）：.NET 运行时打进包，仍需系统预装 Windows App Runtime 1.8，
-        安装包约 31 MB，产物 AutoLoginNet-<版本>-x64.msi / AutoLoginNet-<版本>-portable-x64.zip；
+    只交付两种形态（同一份产品定义，只是载荷不同）：
+      - 默认（全内置）：.NET 与 Windows App Runtime 原生层全部打进包，目标机零运行时依赖，
+        安装包约 47 MB，产物 AutoLoginNet-<版本>-was-fd-x64.msi / AutoLoginNet-<版本>-portable-was-fd-x64.zip；
       - -FrameworkDependent：包内不含运行时，目标机须先装 .NET 10 与 Windows App Runtime 1.8，
-        安装包约 7 MB，产物名带 -fd 后缀；
-      - -WindowsAppSDKSelfContained：.NET 与 Windows App Runtime 原生层全部打进包，
-        目标机零运行时依赖，安装包约 150 MB，产物名带 -was-fd 后缀。
-      三者可同时躺在 dist 里互不覆盖。
+        安装包约 7 MB，产物名带 -fd 后缀。
+      两者可同时躺在 dist 里互不覆盖。
+
+    第三种「自包含 .NET」（只含 .NET、仍需系统 Windows App Runtime）已停止交付，
+    -SelfContained 现在直接报错——省下的空间有限，却把「装不上」的风险留给了用户。
 
     裁剪是「先复制一份再裁剪」，原发布目录不会被破坏：
     先裁剪到 dist\AutoLoginNet，MSI/ZIP 都从裁剪后的目录出。
@@ -27,14 +28,15 @@
     版本号。省略时从 AutoLoginNet.App\AutoLoginNet.App.csproj 读取 <Version>。
 
 .PARAMETER FrameworkDependent
-    产出框架依赖版（不含 .NET 运行时，约 7 MB，文件名带 -fd 后缀）。
+    产出框架依赖版（不含运行时，约 7 MB，文件名带 -fd 后缀）。不加任何形态开关时产出的是全内置版。
 
 .PARAMETER SelfContained
-    显式产出（默认即）自包含 .NET 版（含 .NET 运行时，仍需系统 Windows App Runtime，约 31 MB）。
+    已停止交付形态，传了会直接报错（保留这个开关只为给出明确提示，而不是悄悄按全内置导出）。
 
 .PARAMETER WindowsAppSDKSelfContained
-    全内置版：.NET 与 Windows App Runtime 原生层都打进包，目标机零运行时依赖（约 150 MB），
-    文件名带 -was-fd 后缀。与 -FrameworkDependent / -SelfContained 三者互斥。
+    全内置版（**默认形态**）：.NET 与 Windows App Runtime 原生层都打进包，目标机零运行时依赖
+    （约 47 MB），文件名带 -was-fd 后缀。与 -FrameworkDependent 互斥；显式传这个开关等价于不加开关。
+    —— 自包含 .NET 那第三种形态已于 2026-10-15 停止交付。
 
 .PARAMETER SkipPrune
     不做裁剪，直接打出完整发布目录（出问题时用来对比排查）。
@@ -70,14 +72,11 @@
     pwsh -NoProfile -File Setup\Export-Installer.ps1 -FrameworkDependent -Version 2.0.8
 
 .EXAMPLE
-    pwsh -NoProfile -File Setup\Export-Installer.ps1 -SelfContained -Version 2.0.8
-
-.EXAMPLE
     pwsh -NoProfile -File Setup\Export-Installer.ps1 -BundleRuntime
 
 .EXAMPLE
     # 只准备 WiX 源文件（.wixproj 的生成前步骤；-SkipPublish 表示复用已有载荷）
-    pwsh -NoProfile -File Setup\Export-Installer.ps1 -PrepareOnly -SelfContained -SkipVerify -SkipPublish
+    pwsh -NoProfile -File Setup\Export-Installer.ps1 -PrepareOnly -SkipVerify -SkipPublish
 #>
 [CmdletBinding()]
 param(
@@ -133,25 +132,23 @@ else {
     Write-Host "打包版本：$Version（命令行指定）"
 }
 
-if ($FrameworkDependent -and $SelfContained) {
-    throw '-FrameworkDependent 与 -SelfContained 互斥：一次只能导出一种交付形态。'
+if ($SelfContained) {
+    throw '不再交付「自包含 .NET」形态（包内含 .NET，但仍要求目标机预装 Windows App Runtime，省不了多少空间却容易装不上）。现在只有两种交付形态：默认的「全内置」与 -FrameworkDependent。'
 }
-if ($WindowsAppSDKSelfContained -and ($FrameworkDependent -or $SelfContained)) {
-    throw '-WindowsAppSDKSelfContained 与 -FrameworkDependent / -SelfContained 互斥：一次只能导出一种交付形态。'
+if ($WindowsAppSDKSelfContained -and $FrameworkDependent) {
+    throw '-WindowsAppSDKSelfContained 与 -FrameworkDependent 互斥：一次只能导出一种交付形态。'
 }
 if ($SkipPublish -and -not $PrepareOnly) {
     throw '-SkipPublish 只与 -PrepareOnly 一起用（语义：复用已发布并裁剪好的载荷，只重新生成 WiX 源文件）。'
 }
 
-# 三种形态共用同一套流程，只用后缀区分文件名，这样各版可以同时躺在 dist 里
-$flavorSuffix = if ($WindowsAppSDKSelfContained) { '-was-fd' } elseif ($FrameworkDependent) { '-fd' } else { '' }
-# 全内置版必须同时给 --self-contained true：单传 -p:WindowsAppSDKSelfContained=true 时
+# 两种形态共用同一套流程，只用后缀区分文件名，这样两版可以同时躺在 dist 里
+$flavorSuffix = if ($FrameworkDependent) { '-fd' } else { '-was-fd' }
+# 全内置版（默认）必须同时给 --self-contained true：单传 -p:WindowsAppSDKSelfContained=true 时
 # 命令行上的 -p:SelfContained=false（或 csproj 的 <SelfContained>false</SelfContained>）
 # 会让它退化成「只含 Windows App Runtime、不含 .NET」的中间形态。
 $selfContainedArg = if ($FrameworkDependent) { 'false' } else { 'true' }
-$flavorLabel = if ($WindowsAppSDKSelfContained) { '全内置（含 .NET 与 Windows App Runtime）' }
-elseif ($FrameworkDependent) { '框架依赖（需预装运行时）' }
-else { '自包含 .NET（含 .NET，需系统 Windows App Runtime）' }
+$flavorLabel = if ($FrameworkDependent) { '框架依赖（需预装运行时）' } else { '全内置（含 .NET 与 Windows App Runtime）' }
 Write-Host "交付形态：$flavorLabel"
 
 $msiPath = Join-Path $distDir "AutoLoginNet-$Version$flavorSuffix-x64.msi"
@@ -207,15 +204,15 @@ $publishArgs = @(
     '-c', $Configuration,
     '-r', 'win-x64',
     # 命令行开关会覆盖 csproj 的 <SelfContained>，所以这里必须显式传：
-    #   true  -> .NET 运行时进包（发布目录 37 MB → 152 MB）
+    #   true  -> .NET 运行时进包（全内置形态，发布目录 160 MB → 裁剪后 151 MB）
     #   false -> 框架依赖（只出应用，目标机需预装 .NET 10 + Windows App Runtime 1.8）
     '--self-contained', $selfContainedArg,
     "-p:Version=$Version",
     '-o', $publishDir,
     '--nologo'
 )
-if ($WindowsAppSDKSelfContained) {
-    # Windows App Runtime 的原生层（Microsoft.ui.xaml.dll 等约 50 MB）一并进包。
+if (-not $FrameworkDependent) {
+    # Windows App Runtime 的原生层（Microsoft.ui.xaml.dll 等约 50 MB）一并进包（默认形态）。
     # 必须与上面的 --self-contained true 同时给，否则会退化成中间形态。
     $publishArgs += '-p:WindowsAppSDKSelfContained=true'
 }
