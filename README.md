@@ -17,7 +17,6 @@
 | 两个运行时都已装、只要最小包 | `AutoLoginNet-<版本>-fd-x64.msi`<br>`…-portable-fd-x64.zip` | 7.4 MB | Windows App Runtime 1.8 + .NET 10 |
 
 - **`-was-fd`（全内置）**：`.NET 10` 与 Windows App Runtime 原生层都在包里，目标是「拷到任何 Windows 10 1809+ 机器上都能跑」。
-- **默认版（自包含 .NET）**：`.NET` 随包提供，仍需系统的 Windows App Runtime。
 - **`-fd`（框架依赖）**：两个运行时都不带，体积最小。
 
 `.zip` 是免安装版：解压到任意目录直接运行 `AutoLoginNet.exe`，不写注册表。
