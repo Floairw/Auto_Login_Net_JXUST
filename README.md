@@ -1,5 +1,8 @@
 # Auto_Login_Net_JXUST
 
+纯ai编写，工具为Deepseek Harness,模型为deepseek v4.1f
+原本我写了个C#脚本自用，只有单纯的CLI界面，最近没事就用ai重写了，所以changelog有包含旧版修改信息，无需在意，我没公开发表过。
+
 江西理工大学（JXUST）校园网 **Dr.COM ePortal** 认证客户端。基于 **WinUI 3（Windows App SDK）** 的桌面应用，一键认证、开机自动登录、DNS 优选与校内域名解析。
 
 > **第三方非官方软件**：与学校及学校网络中心、信息中心无隶属或授权关系。完整条款见仓库根目录 [免责声明.txt](免责声明.txt)（安装向导的许可协议页即此全文）。
