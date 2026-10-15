@@ -1,9 +1,9 @@
-using System.Collections.ObjectModel;
-using System.Windows.Input;
 using AutoLoginNet.App.Infrastructure;
 using AutoLoginNet.App.Mvvm;
 using AutoLoginNet.Diagnostics;
 using Microsoft.UI.Dispatching;
+using System.Collections.ObjectModel;
+using System.Windows.Input;
 
 namespace AutoLoginNet.App.ViewModels;
 

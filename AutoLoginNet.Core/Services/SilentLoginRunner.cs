@@ -1,4 +1,3 @@
-using System.Net.Http;
 using AutoLoginNet.Auth;
 using AutoLoginNet.Configuration;
 using AutoLoginNet.Credentials;

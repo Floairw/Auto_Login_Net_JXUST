@@ -1,4 +1,3 @@
-using AutoLoginNet.App.Mvvm;
 using AutoLoginNet.App.UiSupport;
 using AutoLoginNet.App.ViewModels;
 using AutoLoginNet.Auth;

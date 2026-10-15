@@ -1,7 +1,6 @@
-using System.Diagnostics;
-using System.Net.Http;
 using AutoLoginNet.Configuration;
 using AutoLoginNet.Diagnostics;
+using System.Diagnostics;
 
 namespace AutoLoginNet.Auth;
 

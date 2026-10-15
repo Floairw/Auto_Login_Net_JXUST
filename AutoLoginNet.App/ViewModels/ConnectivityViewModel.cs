@@ -1,5 +1,4 @@
 using AutoLoginNet.Network;
-using AutoLoginNet.Services;
 
 namespace AutoLoginNet.App.ViewModels;
 

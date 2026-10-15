@@ -1,7 +1,6 @@
 using AutoLoginNet.Auth;
 using AutoLoginNet.Configuration;
 using AutoLoginNet.Credentials;
-using AutoLoginNet.Diagnostics;
 using AutoLoginNet.Network;
 using AutoLoginNet.Services;
 using Microsoft.VisualStudio.TestTools.UnitTesting;

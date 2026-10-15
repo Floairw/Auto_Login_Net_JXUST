@@ -1,6 +1,6 @@
-using System.Text.RegularExpressions;
 using AutoLoginNet.Diagnostics;
 using AutoLoginNet.Windows;
+using System.Text.RegularExpressions;
 
 namespace AutoLoginNet.Network;
 

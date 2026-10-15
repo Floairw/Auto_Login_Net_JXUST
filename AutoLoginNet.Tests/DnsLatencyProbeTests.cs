@@ -1,7 +1,6 @@
-using System.Buffers.Binary;
-using System.Net;
 using AutoLoginNet.Network;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using System.Buffers.Binary;
 
 namespace AutoLoginNet.Tests;
 

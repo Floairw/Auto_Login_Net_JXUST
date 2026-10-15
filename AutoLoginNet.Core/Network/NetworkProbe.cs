@@ -1,6 +1,6 @@
+using AutoLoginNet.Diagnostics;
 using System.Diagnostics;
 using System.Net.Sockets;
-using AutoLoginNet.Diagnostics;
 
 namespace AutoLoginNet.Network;
 

@@ -1,5 +1,5 @@
-using System.Text.Json;
 using AutoLoginNet.Diagnostics;
+using System.Text.Json;
 
 namespace AutoLoginNet.Services;
 

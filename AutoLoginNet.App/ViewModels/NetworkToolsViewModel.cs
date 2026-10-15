@@ -1,10 +1,10 @@
-using System.Collections.ObjectModel;
-using System.Diagnostics;
-using System.Windows.Input;
 using AutoLoginNet.App.Infrastructure;
 using AutoLoginNet.App.Mvvm;
 using AutoLoginNet.Hosts;
 using AutoLoginNet.Network;
+using System.Collections.ObjectModel;
+using System.Diagnostics;
+using System.Windows.Input;
 
 namespace AutoLoginNet.App.ViewModels;
 

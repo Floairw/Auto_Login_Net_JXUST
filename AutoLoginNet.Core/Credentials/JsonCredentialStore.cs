@@ -1,7 +1,6 @@
-using System.Security.Cryptography;
-using System.Text.Json;
 using AutoLoginNet.Auth;
 using AutoLoginNet.Diagnostics;
+using System.Text.Json;
 
 namespace AutoLoginNet.Credentials;
 

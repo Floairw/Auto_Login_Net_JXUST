@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using AutoLoginNet.Configuration;
 using AutoLoginNet.Diagnostics;
 

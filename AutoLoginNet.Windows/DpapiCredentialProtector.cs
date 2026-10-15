@@ -1,6 +1,6 @@
+using AutoLoginNet.Credentials;
 using System.Security.Cryptography;
 using System.Text;
-using AutoLoginNet.Credentials;
 
 namespace AutoLoginNet.Windows;
 

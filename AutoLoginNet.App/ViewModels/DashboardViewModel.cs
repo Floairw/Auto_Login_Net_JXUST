@@ -1,10 +1,10 @@
-using System.Windows.Input;
 using AutoLoginNet.App.Infrastructure;
 using AutoLoginNet.App.Mvvm;
 using AutoLoginNet.Auth;
 using AutoLoginNet.Credentials;
 using AutoLoginNet.Network;
 using AutoLoginNet.Services;
+using System.Windows.Input;
 
 namespace AutoLoginNet.App.ViewModels;
 

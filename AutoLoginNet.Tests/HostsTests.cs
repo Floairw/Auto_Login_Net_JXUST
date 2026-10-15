@@ -1,5 +1,4 @@
 using AutoLoginNet.Configuration;
-using AutoLoginNet.Diagnostics;
 using AutoLoginNet.Hosts;
 using AutoLoginNet.Tests.Infrastructure;
 using AutoLoginNet.Windows;

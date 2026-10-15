@@ -1,5 +1,4 @@
 using AutoLoginNet.Configuration;
-using AutoLoginNet.Diagnostics;
 using AutoLoginNet.Network;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 

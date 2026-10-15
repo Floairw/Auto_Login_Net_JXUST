@@ -1,9 +1,8 @@
-using System.Net;
-using System.Net.Http;
-using System.Text;
 using AutoLoginNet.Auth;
 using AutoLoginNet.Configuration;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using System.Net;
+using System.Text;
 
 namespace AutoLoginNet.Tests;
 

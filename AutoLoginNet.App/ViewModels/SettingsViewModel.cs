@@ -1,9 +1,8 @@
-﻿using System.Diagnostics;
-using System.Windows.Input;
-using AutoLoginNet.App.Infrastructure;
+﻿using AutoLoginNet.App.Infrastructure;
 using AutoLoginNet.App.Mvvm;
 using AutoLoginNet.Configuration;
-using AutoLoginNet.Services;
+using System.Diagnostics;
+using System.Windows.Input;
 
 namespace AutoLoginNet.App.ViewModels;
 

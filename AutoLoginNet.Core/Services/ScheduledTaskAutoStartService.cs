@@ -1,5 +1,5 @@
-using System.Diagnostics;
 using AutoLoginNet.Diagnostics;
+using System.Diagnostics;
 
 namespace AutoLoginNet.Services;
 

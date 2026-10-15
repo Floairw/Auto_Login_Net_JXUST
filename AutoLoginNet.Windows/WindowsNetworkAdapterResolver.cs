@@ -1,8 +1,8 @@
+using AutoLoginNet.Diagnostics;
+using AutoLoginNet.Windows;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text.Json;
-using AutoLoginNet.Diagnostics;
-using AutoLoginNet.Windows;
 
 namespace AutoLoginNet.Network;
 

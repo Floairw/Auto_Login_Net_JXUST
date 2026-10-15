@@ -1,7 +1,4 @@
-using AutoLoginNet.Auth;
 using AutoLoginNet.Credentials;
-using AutoLoginNet.Diagnostics;
-using AutoLoginNet.Network;
 using AutoLoginNet.Services;
 
 namespace AutoLoginNet.App;

@@ -1,7 +1,7 @@
-using System.Text;
 using AutoLoginNet.Configuration;
 using AutoLoginNet.Diagnostics;
 using AutoLoginNet.Hosts;
+using System.Text;
 
 namespace AutoLoginNet.Windows;
 
