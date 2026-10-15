@@ -8,7 +8,7 @@
 
 ## 下载与安装
 
-安装包都是**简体中文向导**，装到 `Program Files`、自动创建开始菜单快捷方式、升级时自动卸旧版。三者的界面和功能完全相同，**只有携带的运行时不同**，按目标机器情况选一个即可（同一 `UpgradeCode`，不能同时装）。
+安装包都是**简体中文向导**，装到 `Program Files`、自动创建开始菜单快捷方式，升级时自动卸载已安装的版本并原地覆盖。三者的界面和功能完全相同，**只有携带的运行时不同**，按目标机器情况选一个即可（同一 `UpgradeCode`，不能同时装）。
 
 | 选它 | 文件 | 大小 | 目标机需预装 |
 | --- | --- | --- | --- |
@@ -62,7 +62,7 @@ pwsh -NoProfile -File .\Setup\Export-Installer.ps1 -FrameworkDependent -BundleRu
 | **一键登录** | 自动探测网络环境 → 提交认证 → 分类反馈结果（成功 / 已在线 / 密码错误 / 欠费停机 / 网络异常） |
 | **自动登录** | 「启动时自动登录」打开后，启动程序即用已保存凭据登录；瞬时失败按配置自动重试 |
 | **注销断网** | 主动断开校园网认证会话（等价于门户上的「注销」）；仅在外网可达时可用，带二次确认 |
-| **网络状态** | 首页与侧栏共享同一份探测结果，并行探测认证服务器与外网连通性，明确告知「需要认证 / 无需认证 / 网络未知」（旧版两处各自探测、结论经常互相矛盾） |
+| **网络状态** | 首页与侧栏共享同一份探测结果，并行探测认证服务器与外网连通性，明确告知「需要认证 / 无需认证 / 网络未知」 |
 | **开机自启** | 首页开关即可启用，以「登录时 + 最高权限」计划任务静默认证，无窗口、不打断使用 |
 | **凭据安全** | Windows DPAPI（当前用户 + 附加熵）加密；文件复制到其他机器或用户账户下均无法解密 |
 | **DNS 优选** | 用**真实 DNS 查询**测量各公共 DNS 的解析延迟（而非 ICMP Ping），逐项显示首选/备选延迟并给出推荐组合，只改当前上网所用网卡 |
@@ -146,7 +146,7 @@ pwsh -NoProfile -File .\Setup\Export-Installer.ps1 -FrameworkDependent -Desktop
 pwsh -NoProfile -File .\Setup\Build-Installer.ps1 -SkipPublish -FrameworkDependent
 ```
 
-`Export-Installer.ps1` 依次做：编译原生自定义动作（升级时定位旧版目录）→ `dotnet publish`（按形态决定是否自包含）→ 按「运行时不会被加载」的证据裁剪（`Setup\PublishPruneRules.ps1`）→ 跑裁剪后可用性验证（`Setup\Verify-PrunedPublish.ps1`）→ 生成 MSI 与 ZIP → 打印大小与 SHA256。
+`Export-Installer.ps1` 依次做：编译原生自定义动作（升级时定位已安装目录）→ `dotnet publish`（按形态决定是否自包含）→ 按「运行时不会被加载」的证据裁剪（`Setup\PublishPruneRules.ps1`）→ 跑裁剪后可用性验证（`Setup\Verify-PrunedPublish.ps1`）→ 生成 MSI 与 ZIP → 打印大小与 SHA256。
 
 常用参数：`-Version 2.1.0`（默认读 csproj）、`-SkipPrune` / `-SkipVerify`（排查用）、`-BundleRuntime`（连带运行时安装器）、`-Desktop`（复制到桌面）。
 
@@ -181,7 +181,7 @@ dotnet build Setup\AutoLoginNet.Setup.wixproj -c Release -p:SetupFlavor=Framewor
 dotnet build Setup\AutoLoginNet.Setup.wixproj -c Release -p:SetupFlavor=AllBundled         # -was-fd
 ```
 
-- **交付形态**：`-p:SetupFlavor=` 取 `SelfContained`（默认）/ `FrameworkDependent` / `AllBundled`。形态一变会强制重新准备载荷；万一载荷与要求的形态不符（例如复用旧载荷），`-FinalizeMsi` 会直接报错，绝不会印出名字和内容对不上的包。
+- **交付形态**：`-p:SetupFlavor=` 取 `SelfContained`（默认）/ `FrameworkDependent` / `AllBundled`。形态一变会强制重新准备载荷；万一载荷与所要求的形态不符，`-FinalizeMsi` 会直接报错，绝不会印出名字和内容对不上的包。
 - **载荷固定按 Release 编译**：解决方案当前配置只影响程序自身，安装包内容永远是 Release 载荷。否则在 VS 里用 Debug 生成，会把 Debug 载荷灌进 `dist\AutoLoginNet`、并盖上与之前 Release 那一对同名的 MSI/ZIP（实测踩到过）。真要出 Debug 载荷的包，用 `-p:SetupPayloadConfiguration=Debug`。
 - **复用已有载荷**：`-p:SetupSkipPublish=true`（跳过发布与裁剪，只用现有 `dist\AutoLoginNet`）。
 - **默认跳过「裁剪后可用性验证」**：那一步会真的启动应用做 UI 自动化探测，IDE 里每次生成都跑太重；想跑就加 `-p:SetupSkipVerify=false`。命令行直接跑 `Export-Installer.ps1` 时它仍然是默认开启的。
@@ -280,7 +280,7 @@ MSI 打完后会读安装包的表逐项校验（`Setup\Test-InstallerLocalizati
 安全设计要点：
 
 - **日志双重脱敏**：写入前用正则把 `password` / `token` / `secret` 等字段值替换为 `***`，且账号只保留前 2 位与末 1 位。
-- **凭据格式带版本号**：遇到不受支持的旧格式会明确提示重新登录，而不是静默降级使用。
+- **凭据格式带版本号**：遇到不受支持的凭据格式会明确提示重新登录，而不是静默降级使用。
 - **提权操作隔离**（计划任务、DNS、hosts）单独以管理员身份执行并立即退出，主程序始终以普通权限运行。
 - **hosts 写入可靠**：原地写入而非「临时文件改名替换」（部分安全软件的 HIPS 会拦截对 hosts 的改名覆盖），写完立即回读比对，不一致就用写入前的内容回滚。
 
@@ -294,7 +294,7 @@ MSI 打完后会读安装包的表逐项校验（`Setup\Test-InstallerLocalizati
 dotnet test Auto_Login_Net_JXUST.sln -c Release
 ```
 
-181 个用例，覆盖认证响应解析、凭据加解密与格式迁移、日志脱敏、配置校验与回退、网络判定、hosts 托管块生成与写入（含「原地写入不替换文件」的回归断言）。
+181 个用例，覆盖认证响应解析、凭据加解密、日志脱敏、配置校验与回退、网络判定、hosts 托管块生成与写入（含「原地写入不替换文件」的回归断言）。
 
 ---
 
