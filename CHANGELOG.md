@@ -5,6 +5,38 @@ v2.0 是一次彻底重构，v1.x 的历史记录保留在文件末尾。
 
 ---
 
+## 2026-10-17 — 版本号改为 2.0.9.1.dev
+
+**文件名能看出这是开发版，「应用和功能」里仍得是纯数字——版本号从此分成两张面孔。**
+
+- **版本号拆成「数字 + 标签」**（`AutoLoginNet.App\AutoLoginNet.App.csproj`）：`Version` / `AssemblyVersion` / `FileVersion`
+  统一为 `2.0.9.1`，另设 `InformationalVersion` 为 `2.0.9.1.dev`，并关掉
+  `IncludeSourceRevisionInInformationalVersion`（否则源版本号会被追加成 `2.0.9.1.dev+<sha>`）。
+  两条硬约束逼出这个拆法：Windows Installer 的 `ProductVersion` 只接受 1~4 段纯数字，
+  .NET 的 `Version` 也不接受「4 段 + 文本标签」（`-p:Version=2.0.9.1.dev` 在还原阶段就会失败）。
+- **新增 `AutoLoginNet.App\Infrastructure\AppVersion.cs`**：从 `AssemblyInformationalVersionAttribute`
+  读完整标签（缺失时回退三段版本、再兜底「未知」）。启动日志与设置页都用它，
+  于是界面显示 `2.0.9.1.dev`，而安装包登记版本仍是 `2.0.9.1`。
+- **打包脚本新增 `-VersionLabel`**（`Setup\Export-Installer.ps1`、`Setup\Build-Installer.ps1`）：
+  不传时从 csproj 的 `Version` + `InformationalVersion` 解析，并校验「版本必须是 1~4 段数字、
+  标签必须以版本开头」，不合规直接抛中文错误。MSI/ZIP 文件名、裁剪报告头、publish 的
+  `-p:InformationalVersion` 用完整标签，MSI 里的 `{{VERSION}}` 继续用纯数字版本。
+- **修复框架依赖包的一个启动崩溃**：`Setup\PublishPruneRules.ps1` 原先把
+  `Microsoft.Windows.AppLifecycle.Projection.dll` 当成「没人引用」删掉，而单实例守卫用
+  `AppInstance.FindOrRegisterForKey` 需要它；框架依赖包删掉后启动即 `0xC000027B`
+  （combase 报 0x80070002 找不到文件），全内置包因为投影由包内 `.winmd` 提供而幸免。
+  该文件已移入 `$MustKeep`。
+- **验证脚本改为隔离数据目录**：`Setup\Verify-PrunedPublish.ps1` 通过新增的
+  `AUTOLOGIN_DATA_DIR` 环境变量（见 `AutoLoginNet.Core\AppPaths.cs`）把应用指向临时目录，
+  并塞一份 24 条、多分类的种子日志。既验证了「日志页真的从磁盘读文件」，
+  也不再污染真实 `%AppData%`；顺带绕开一个环境陷阱：真实日志积累到上千条时，
+  日志页元素数量会让 UIA 的一次 `FindAll` 超时，验证假失败（本次排查中真实日志已有 818 条）。
+- **验证**：两形态各出一条命令跑通「发布 → 裁剪 → 实机验证 → MSI/ZIP」——
+  全内置（发布 498 文件 / 159.6 MB，裁剪后 288 文件 / 151.6 MB，MSI 46.70 MB，ZIP 59.79 MB）、
+  框架依赖（裁剪后 26 文件 / 34.7 MB，MSI 7.45 MB，ZIP 9.35 MB）；
+  两个 MSI 的 `ProductVersion` 均为 `2.0.9.1`（ARP 只显示数字），文件名与 ZIP 名带 `2.0.9.1.dev`；
+  单元测试 200/200 通过。
+
 ## 2026-10-17 — 自启常驻托盘、关闭行为可选、上网网卡可切换、注销修复
 
 **四件事一起改：开机自启不再「闪一下就走」、关闭按钮可以选「收进托盘」、认证与 DNS 用哪张网卡可手动指定、自启登录后注销按钮不再点不动。**

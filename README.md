@@ -25,6 +25,8 @@
 
 `.zip` 是免安装版：解压到任意目录直接运行 `AutoLoginNet.exe`，不写注册表。
 
+> **版本号有两张面孔，属预期行为。** 安装包文件名用带标签的完整版本（当前为 `2.0.9.1.dev`），而「应用和功能」/ ARP 里只显示纯数字 `2.0.9.1`——Windows Installer 的 `ProductVersion` 只接受 1~4 段数字，`dev` 这类标签进不了 MSI。程序自己（设置页与启动日志）显示完整版本 `2.0.9.1.dev`。
+
 > **两种形态二选一，不能同时安装。** `-was-fd` 与 `-fd` 是**同一个产品、两种载荷**：`UpgradeCode` 相同（同一条升级链），`ProductCode` 由 WiX 每次构建自动生成。所以先装了其中一种、再装另一种时，Windows Installer 会把它当成「同版本升级」——自动卸载旧包、装上新包（仍装回原来的目录），不会并排出现两份，ARP 里也始终只有一条记录。要换形态，卸载当前版本再装另一个即可；`.zip` 免安装版不写注册表，不受此限制，可以和 MSI 版并存。
 
 ### 缺运行时会怎样
@@ -154,16 +156,18 @@ pwsh -NoProfile -File .\Setup\Build-Installer.ps1 -SkipPublish -FrameworkDepende
 
 `Export-Installer.ps1` 依次做：编译原生自定义动作（升级时定位已安装目录）→ `dotnet publish`（按形态决定是否自包含）→ 按「运行时不会被加载」的证据裁剪（`Setup\PublishPruneRules.ps1`）→ 跑裁剪后可用性验证（`Setup\Verify-PrunedPublish.ps1`）→ 生成 MSI 与 ZIP → 打印大小与 SHA256。
 
-常用参数：`-Version 2.1.0`（默认读 csproj）、`-SkipPrune` / `-SkipVerify`（排查用）、`-BundleRuntime`（连带运行时安装器）、`-Desktop`（复制到桌面）。
+裁剪后可用性验证不会碰真实数据：它通过环境变量 `AUTOLOGIN_DATA_DIR`（见 `AutoLoginNet.Core\AppPaths.cs`）把应用的数据目录指向临时目录，先塞一份种子日志，再启动应用切页、读日志、跑一次网络检测，结束后删掉临时目录。
+
+常用参数：`-Version 2.1.0`（默认读 csproj）、`-VersionLabel 2.0.9.1.dev`（默认读 csproj 的 `InformationalVersion`；标签只进文件名、ZIP 与程序界面，MSI 里的 `ProductVersion` 始终是纯数字的 `Version`）、`-SkipPrune` / `-SkipVerify`（排查用）、`-BundleRuntime`（连带运行时安装器）、`-Desktop`（复制到桌面）。
 
 另有三个开关是给 MSBuild 工程复用的（见下一节），直接手跑一般用不到：`Export-Installer.ps1 -PrepareOnly`（只准备载荷与 WiX 源文件）、`Build-Installer.ps1 -GenerateOnly -SkipPublish`（只生成 WiX 源文件）、`Build-Installer.ps1 -FinalizeMsi <MSI 路径>`（定稿并落盘一个外部编译好的 MSI）。
 
-**实测体积（2.0.8）**：
+**实测体积（2.0.9.1.dev）**：
 
 | 形态 | 发布目录 | 裁剪后 | MSI | ZIP |
 | --- | --- | --- | --- | --- |
-| 全内置（`-was-fd`，默认） | 159.6 MB / 498 个文件 | **151.5 MB / 287 个文件** | **46.7 MB** | **59.8 MB** |
-| 框架依赖（`-fd`） | 36.8 MB / 51 个文件 | **34.6 MB / 25 个文件** | **7.4 MB** | **9.3 MB** |
+| 全内置（`-was-fd`，默认） | 159.6 MB / 498 个文件 | **151.6 MB / 288 个文件** | **46.70 MB** | **59.79 MB** |
+| 框架依赖（`-fd`） | 36.8 MB / 51 个文件 | **34.7 MB / 26 个文件** | **7.45 MB** | **9.35 MB** |
 
 体积主要来自三块，与程序自身代码无关（程序自身约 2.2 MB）：`.NET 10` 运行时 63 MB、WinUI 原生层 50 MB、WinRT 托管投影 33 MB（其中 `Microsoft.Windows.SDK.NET.dll` 单个 23.7 MB，且**不能裁剪**——WinUI 3 + CsWinRT 按名字反射解析投影类型，`PublishTrimmed` 会让带 `x:Bind` 的页面直接崩）。
 
