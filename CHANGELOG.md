@@ -5,6 +5,28 @@ v2.0 是一次彻底重构，v1.x 的历史记录保留在文件末尾。
 
 ---
 
+## 2026-10-17 — 最小化收进系统托盘
+
+**主窗口「最小化」不再缩进任务栏，而是收进系统托盘。** 这是常驻类工具最省心的用法：登录完成后窗口不必占着
+任务栏也不占用屏幕，需要看日志或改设置时从托盘图标点回来即可。
+
+- **新增 `AutoLoginNet.App\Infrastructure\TrayIcon.cs`（P/Invoke 自研，不引入 WinForms / 第三方托盘库）**：
+  自建一个隐藏的顶层原生窗口接收回调消息（`WM_TRAYICON = WM_APP + 1`），用 `Shell_NotifyIconW` 增删改图标；
+  左键单击 / 双击 → 显示主窗口，右键 → `TrackPopupMenuEx` 弹出「显示主窗口」/「退出程序」（选单前 `SetForegroundWindow`、
+  选单后补一条 `WM_NULL`，否则菜单会卡住不消失）；图标从 exe 内嵌的 `Assets\app.ico` 取（`ExtractIconExW`），失败才回退系统默认图标。
+  不用 WinForms 的 `NotifyIcon` 是因为它会把整个 WinForms 拖进交付包，且其消息泵与 XAML 组件的消息循环容易互相干扰。
+- **`AutoLoginNet.App\MainWindow.xaml.cs`**：`SetWindowSubclass` 拦截 `WM_SYSCOMMAND`/`SC_MINIMIZE`（覆盖标题栏按钮、
+  Alt+Space 菜单、Win+↓），改为 `AppWindow.Hide()`——不用 `WindowState.Minimized`，那样会留在任务栏；
+  子类化没生效时由 `AppWindow.Changed` 感知到最小化后兜底隐藏。**托盘图标没加成功时自动退回普通最小化**，
+  避免出现「窗口藏起来又点不回来」。关闭主窗口仍是退出程序（`Closed` 事件里移除托盘图标）。
+- **开机自启路径（`--autostart` 静默登录）用 `new MainWindow(enableTray: false)`**：那条路径窗口只闪一下，
+  留个托盘图标反而是死图标。
+- 设置页「登录成功后最小化窗口」文案改为「登录成功后最小化到系统托盘」，`UiSettings.MinimizeAfterLogin` 注释同步。
+- 已知环境限制：如果 exe 被打上低完整性标签（某些沙箱目录会继承 Low IL），进程无法与资源管理器通信，
+  `Shell_NotifyIconW` 会返回失败且 `GetLastWin32Error()` 为 0——此时按上面的规则退化为普通最小化，功能不受影响。
+
+---
+
 ## 2026-10-15 — 交付形态收敛为两种（全内置 / 框架依赖）
 
 **「自包含 .NET」版（31.3 MB：只带 .NET、但仍要求目标机装 Windows App Runtime 1.8）停止交付。**

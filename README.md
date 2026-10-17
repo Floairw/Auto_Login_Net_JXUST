@@ -74,6 +74,7 @@ pwsh -NoProfile -File .\Setup\Export-Installer.ps1 -FrameworkDependent -BundleRu
 | **校内域名解析** | 「网络工具 → 修改 hosts 文件」把 16 条 JXUST 校内站点映射写入 hosts，解决「改用公共 DNS 后教务、办事大厅、校园卡等访问不了」；只维护带标记的区块，不动手写条目，写入前自动备份 |
 | **连通性诊断** | Ping 失败自动回退 TCP 443，避免对端丢弃 ICMP 时误判为断网 |
 | **运行日志** | 实时查看、按级别/关键字过滤；密码等敏感字段写入前已脱敏；增量渲染，长日志不卡顿 |
+| **最小化到托盘** | 点「最小化」（或启用「登录成功后最小化」）时窗口收进系统托盘而不是任务栏；左键/双击图标还原，右键菜单可「显示主窗口」/「退出程序」 |
 | **主题** | 跟随系统 / 浅色 / 深色，全部使用系统 Fluent 主题资源 |
 
 ---
@@ -99,10 +100,10 @@ AutoLoginNet.Windows   # 平台实现（net10.0-windows）
 AutoLoginNet.App       # WinUI 3 界面（net10.0-windows10.0.19041.0）
 ├─ Pages/              # 首页 / 网络工具 / 运行日志 / 设置
 ├─ ViewModels/         # MVVM 视图模型
-├─ Infrastructure/     # 主题、界面设置、Shell 辅助
+├─ Infrastructure/     # 主题、界面设置、托盘图标、单实例守卫、Shell 辅助
 └─ Mvvm/               # 轻量 MVVM 基类（无第三方依赖）
 
-AutoLoginNet.Tests     # 单元测试（MSTest，181 个用例）
+AutoLoginNet.Tests     # 单元测试（MSTest，200 个用例）
 
 Setup/                 # 打包与安装脚本 + WiX 工程（见「构建」）
                        #   AutoLoginNet.Setup.wixproj：接进解决方案，VS / 命令行一键出 MSI
@@ -207,6 +208,16 @@ MSI 打完后会读安装包的表逐项校验（`Setup\Test-InstallerLocalizati
 ```powershell
 .\AutoLoginNet.App\bin\x64\Release\net10.0-windows10.0.19041.0\win-x64\AutoLoginNet.exe
 ```
+
+### 托盘图标与退出
+
+程序常驻系统托盘：主窗口隐藏 / 最小化后从托盘图标左键（或双击）还原，右键菜单提供「显示主窗口」与「退出程序」。
+关闭主窗口仍会退出程序（托盘图标随之移除）；不想退出时用最小化把窗口收进托盘，要从托盘退出则用右键菜单的「退出程序」。
+托盘图标由自己 P/Invoke `Shell_NotifyIconW` 实现（WinUI 3 没有托盘 API）；图标创建失败时自动退化为普通最小化，
+不会出现「窗口藏起来却点不回来」的情况。
+
+> 注：从本机命令行直接运行构建产物时，如果 exe 所在目录被打过低完整性标签（例如某些沙箱环境），
+> 进程会是低 IL 而无法与资源管理器通信，托盘图标会加不上并退化为普通最小化。
 
 ### 命令行参数
 
