@@ -3,6 +3,7 @@ using AutoLoginNet.App.Infrastructure;
 using AutoLoginNet.App.Pages;
 using AutoLoginNet.App.ViewModels;
 using Microsoft.UI.Composition.SystemBackdrops;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -35,11 +36,29 @@ public sealed partial class MainWindow : Window
     /// <summary>上网网卡选择（托盘菜单与网络页共用同一份偏好）。</summary>
     private readonly AdapterSwitcher _adapterSwitcher;
 
+    /// <summary>
+    /// 把托盘图标设为任务栏常驻的重试间隔。系统是懒创建 NotifyIconSettings 条目的
+    /// （用户第一次打开「^」之后才出现），所以只能轮询。
+    /// </summary>
+    private static readonly TimeSpan TrayPromotionRetryInterval = TimeSpan.FromSeconds(15);
+
+    /// <summary>15 秒一轮的重试最多盯 10 分钟，之后改成 5 分钟一轮（用户可能过很久才点开「^」）。</summary>
+    private const int TrayPromotionQuickAttempts = 40;
+
+    /// <summary>「图标在哪」的提示每次运行只弹一次。</summary>
+    private static bool _trayHintShown;
+
+    /// <summary>提示对话框正在显示（防止连点最小化按钮弹出多个）。</summary>
+    private bool _trayHintPending;
+
     private bool _hiddenToTray;
     private bool _exiting;
     private IntPtr _hwnd;
     private SubclassProc? _subclassProc;
     private bool _activateRetryHooked;
+    private DispatcherQueueTimer? _trayPromotionTimer;
+    private int _trayPromotionAttempts;
+    private bool _trayPromotionSettled;
 
     /// <param name="enableTray">是否创建托盘图标。</param>
     /// <param name="startHidden">是否启动即藏进托盘（开机自启且勾选了「最小化到托盘」时使用）。</param>
@@ -72,6 +91,9 @@ public sealed partial class MainWindow : Window
                 BuildTrayAdapterMenu,
                 OnTrayAdapterSelected)
             : null;
+
+        // Windows 11 默认把新托盘图标折叠进「^」，这里尽力把它改成任务栏常驻显示
+        StartTrayPromotionRetry();
 
         // 拦截「最小化」：标题栏的最小化按钮不再缩到任务栏，而是直接藏进托盘
         InstallMinimizeInterceptor();
@@ -140,6 +162,7 @@ public sealed partial class MainWindow : Window
         // 托盘不可用时退回普通最小化——否则窗口藏起来就再也点不回来了
         if (_tray is null || !_tray.IsAvailable)
         {
+            Log("托盘图标不可用，已改为普通最小化（进程可能处于低完整性级别，或资源管理器还未就绪）");
             MinimizeToTaskbar();
             return;
         }
@@ -153,6 +176,162 @@ public sealed partial class MainWindow : Window
         {
             _hiddenToTray = false;
             MinimizeToTaskbar();
+            return;
+        }
+
+        Log("已最小化到系统托盘");
+    }
+
+    /// <summary>
+    /// 每次运行第一次最小化时，若图标还没确认显示在任务栏上，藏起来就等于「程序消失了」，
+    /// 所以这次先弹一个说明框（藏在托盘里的窗口没法弹自己的对话框），用户确认后再收进托盘。
+    /// </summary>
+    private bool ShouldHintBeforeHiding()
+    {
+        if (_trayHintShown || _trayHintPending || _tray is null || !_tray.IsAvailable)
+        {
+            return false;
+        }
+
+        // 顺手再试一次：用户可能刚点开过「^」，系统这时才建出设置条目
+        if (PromoteTrayIcon() == TrayPromotionState.Promoted)
+        {
+            // 图标已经显示在任务栏上，不需要再解释
+            return false;
+        }
+
+        _trayHintShown = true;
+        _trayHintPending = true;
+        return true;
+    }
+
+    /// <summary>弹一次「图标在右下角」的说明，确认后再把窗口收进托盘。</summary>
+    private async Task ShowTrayHintThenHideAsync()
+    {
+        try
+        {
+            await ShellHelper.ShowMessageAsync(
+                RootGrid.XamlRoot,
+                "已最小化到系统托盘",
+                "程序图标在任务栏右下角的通知区域；如果没看到，请点「^」展开，"
+                + "或在「设置 → 个性化 → 任务栏 → 其他系统托盘图标」里把本程序打开。\n\n"
+                + "点「确定」后窗口就收进托盘，之后每次最小化都直接进托盘。");
+
+            Log("已在首次最小化时提示托盘图标的位置");
+        }
+        catch (Exception ex)
+        {
+            Log($"托盘提示对话框打开失败：{ex.Message}");
+        }
+        finally
+        {
+            _trayHintPending = false;
+            HideToTray();
+        }
+    }
+
+    /// <summary>
+    /// 让托盘图标尽量显示在任务栏上；返回尝试后的状态。
+    /// <para>
+    /// 定时器只在「系统还没记录过本图标」（<see cref="TrayPromotionState.NotListed"/>）时保留，
+    /// 一旦确认显示或确认用户自己关掉过就停掉，避免无谓地读注册表。
+    /// </para>
+    /// </summary>
+    private TrayPromotionState PromoteTrayIcon()
+    {
+        if (_tray is null)
+        {
+            return TrayPromotionState.NotListed;
+        }
+
+        TrayPromotionState state = _tray.TryPromoteToTaskbar();
+
+        if (state == TrayPromotionState.Promoted && !_trayPromotionSettled)
+        {
+            _trayPromotionSettled = true;
+            Log("已把托盘图标设为任务栏常驻显示（Windows 11 默认会把它折叠进右下角的「^」）");
+        }
+        else if (state == TrayPromotionState.Hidden && !_trayPromotionSettled)
+        {
+            // 值为 0 表示用户自己关掉过，尊重用户的系统设置
+            _trayPromotionSettled = true;
+            Log("托盘图标当前折叠在任务栏「^」里（用户关闭过常驻显示），不再自动改动");
+        }
+
+        return state;
+    }
+
+    private void StartTrayPromotionRetry()
+    {
+        if (_tray is null)
+        {
+            return;
+        }
+
+        if (PromoteTrayIcon() != TrayPromotionState.NotListed)
+        {
+            return;
+        }
+
+        DispatcherQueueTimer? timer = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread()?.CreateTimer();
+        if (timer is null)
+        {
+            return;
+        }
+
+        timer.Interval = TrayPromotionRetryInterval;
+        timer.IsRepeating = true;
+        timer.Tick += OnTrayPromotionTick;
+        _trayPromotionTimer = timer;
+        timer.Start();
+    }
+
+    private void OnTrayPromotionTick(DispatcherQueueTimer sender, object args)
+    {
+        _trayPromotionAttempts++;
+
+        if (PromoteTrayIcon() != TrayPromotionState.NotListed)
+        {
+            StopTrayPromotionRetry();
+            return;
+        }
+
+        // 前 10 分钟勤快点；用户可能很久之后才第一次点开「^」，之后改成慢速轮询，不再停
+        if (_trayPromotionAttempts == TrayPromotionQuickAttempts)
+        {
+            sender.Interval = TimeSpan.FromMinutes(5);
+        }
+    }
+
+    private void StopTrayPromotionRetry()
+    {
+        if (_trayPromotionTimer is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _trayPromotionTimer.Stop();
+            _trayPromotionTimer.Tick -= OnTrayPromotionTick;
+        }
+        catch
+        {
+            // 定时器停不下来不影响退出流程
+        }
+
+        _trayPromotionTimer = null;
+    }
+
+    private static void Log(string message)
+    {
+        try
+        {
+            App.Services?.Log.Info(message, "界面");
+        }
+        catch
+        {
+            // 启动早期日志服务可能还没好
         }
     }
 
@@ -165,6 +344,9 @@ public sealed partial class MainWindow : Window
         try
         {
             AppWindow.Show();
+
+            // 用户很可能就是「找不到图标」才点托盘还原的，顺便再试一次常驻显示
+            PromoteTrayIcon();
 
             if (AppWindow.Presenter is OverlappedPresenter presenter
                 && presenter.State == OverlappedPresenterState.Minimized)
@@ -289,6 +471,13 @@ public sealed partial class MainWindow : Window
         // 标题栏的最小化按钮（含 Alt+Space 菜单、Win+↓）：直接藏进托盘
         if (msg == WM_SYSCOMMAND && (uint)(wParam.ToInt64() & 0xFFF0) == SC_MINIMIZE)
         {
+            // 第一次最小化且图标还没确认显示在任务栏上：先说明图标在哪，确认后再藏
+            if (ShouldHintBeforeHiding())
+            {
+                _ = ShowTrayHintThenHideAsync();
+                return 0;
+            }
+
             HideToTray();
             return 0;
         }
@@ -393,6 +582,8 @@ public sealed partial class MainWindow : Window
 
     private void DisposeTray()
     {
+        StopTrayPromotionRetry();
+
         try
         {
             _tray?.Dispose();

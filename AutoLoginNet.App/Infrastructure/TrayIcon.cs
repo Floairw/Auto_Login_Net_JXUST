@@ -122,6 +122,54 @@ public sealed class TrayIcon : IDisposable
     /// <summary>托盘图标是否已经出现在通知区域。</summary>
     public bool IsAvailable => _added;
 
+    /// <summary>
+    /// 尽力把托盘图标设为「在任务栏上显示」，并返回尝试后的状态。
+    /// <para>
+    /// Windows 11 默认把新图标折叠进「^」溢出面板，用户会以为没有托盘。系统没提供申请常驻的 API，
+    /// 只能改 <c>HKCU\Control Panel\NotifyIconSettings</c> 里的 <c>IsPromoted</c>（见
+    /// <see cref="TrayIconPromotion"/>）。该条目是懒创建的，返回 <see cref="TrayPromotionState.NotListed"/>
+    /// 时调用方应稍后再试。
+    /// </para>
+    /// </summary>
+    public TrayPromotionState TryPromoteToTaskbar()
+    {
+        if (_disposed || !_added)
+        {
+            return TrayPromotionState.NotListed;
+        }
+
+        TrayPromotionResult result;
+        try
+        {
+            result = TrayIconPromotion.EnsurePromoted();
+        }
+        catch
+        {
+            return TrayPromotionState.NotListed;
+        }
+
+        if (result.Changed)
+        {
+            // 资源管理器是在添加图标时读这个值的，改完必须重新添加一次才会生效
+            ReAddIcon();
+        }
+
+        return result.State;
+    }
+
+    /// <summary>删掉再重新添加图标（资源管理器会重新读取托盘设置）。</summary>
+    private void ReAddIcon()
+    {
+        if (_hwnd == 0)
+        {
+            return;
+        }
+
+        var data = CreateNotificationData(0);
+        Shell_NotifyIconW(NIM_DELETE, ref data);
+        _added = AddIcon();
+    }
+
     public void Dispose()
     {
         if (_disposed)
