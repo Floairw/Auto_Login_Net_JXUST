@@ -26,6 +26,7 @@ public sealed class NetworkToolsViewModel : ObservableObject
     private string _adapterText = "正在解析活动网卡…";
     private string _currentDnsText = "—";
     private string _dnsStatus = "点击「测试全部」，将自动选出延迟最低的首选与备选 DNS。";
+    private string _adapterPriorityStatus = "尚未设置系统首选网卡：系统按默认跃点自动选路。";
     private DnsPair? _recommended;
     private string _pingTarget;
     private string _pingResult = "尚未测试";
@@ -87,6 +88,22 @@ public sealed class NetworkToolsViewModel : ObservableObject
         get => _dnsStatus;
         private set => SetProperty(ref _dnsStatus, value);
     }
+
+    /// <summary>系统首选网卡操作的状态说明（与 DNS 的状态分开，避免两块功能互相覆盖提示）。</summary>
+    public string AdapterPriorityStatus
+    {
+        get => _adapterPriorityStatus;
+        private set => SetProperty(ref _adapterPriorityStatus, value);
+    }
+
+    /// <summary>
+    /// 是否存在可恢复的跃点快照（「恢复」按钮可用性）。
+    /// <para>
+    /// 刻意直接在 getter 里读服务：快照是磁盘文件，界面缓存可能与实际状态不一致，
+    /// 每次读取文件系统再判断最便宜也最不会骗人。
+    /// </para>
+    /// </summary>
+    public bool CanRestoreAdapterPriority => _services.AdapterPriority.HasSnapshot;
 
     public bool IsMeasuring
     {
@@ -434,6 +451,126 @@ public sealed class NetworkToolsViewModel : ObservableObject
         }
 
         return result;
+    }
+
+    // ---------------- 系统首选网卡（IPv4 接口跃点） ----------------
+
+    /// <summary>
+    /// 把当前上网网卡设为系统首选：该网卡 IPv4 跃点改为 10，其余已连接网卡改为 9000。
+    /// <para>
+    /// 已提权时直接改；否则走提权子进程 + 结果文件——与 DNS 同样的模式，
+    /// 因为改跃点同样需要管理员权限，且界面必须拿到真实结论而不是停在「已请求授权」。
+    /// </para>
+    /// </summary>
+    public async Task SetSystemPreferredAsync()
+    {
+        // 以界面展示的「当前网卡」为准：偏好网卡可能未连接，解析不出就不能改
+        if (!_adapter.HasValue)
+        {
+            AdapterPriorityStatus = "尚未解析到正在使用的网卡，无法设为系统首选。";
+            return;
+        }
+
+        AdapterInfo adapter = _adapter.Value;
+
+        if (ShellHelper.IsElevated())
+        {
+            AdapterPriorityStatus = "正在设置系统首选网卡…";
+            AdapterPriorityOutcome outcome = await _services.AdapterPriority.ApplyPreferredAsync(adapter.Name);
+            AdapterPriorityStatus = BuildAdapterPriorityText(outcome, adapter.Display);
+            LogAdapterPriority("设置系统首选网卡", adapter.Name, outcome);
+            OnPropertiesChanged(nameof(CanRestoreAdapterPriority));
+            return;
+        }
+
+        await RunElevatedAdapterPriorityAsync(AdapterPriorityPlanner.ApplyAction, adapter.Name);
+    }
+
+    /// <summary>按应用前快照恢复原跃点；没有快照时说明原因而不是静默返回。</summary>
+    public async Task RestoreAdapterPriorityAsync()
+    {
+        if (!_services.AdapterPriority.HasSnapshot)
+        {
+            AdapterPriorityStatus = "没有可恢复的跃点记录，系统当前按默认跃点选路。";
+            OnPropertiesChanged(nameof(CanRestoreAdapterPriority));
+            return;
+        }
+
+        if (ShellHelper.IsElevated())
+        {
+            AdapterPriorityStatus = "正在恢复系统自动跃点…";
+            AdapterPriorityOutcome outcome = await _services.AdapterPriority.RestoreAsync();
+            AdapterPriorityStatus = BuildAdapterPriorityText(outcome, null);
+            LogAdapterPriority("恢复系统自动跃点", null, outcome);
+            OnPropertiesChanged(nameof(CanRestoreAdapterPriority));
+            return;
+        }
+
+        await RunElevatedAdapterPriorityAsync(AdapterPriorityPlanner.RestoreAction, null);
+    }
+
+    /// <summary>通过提权子进程应用或恢复跃点，并回读约定文件里的真实结果。</summary>
+    private async Task RunElevatedAdapterPriorityAsync(string action, string? adapterName)
+    {
+        string resultPath = AdapterPriorityResultFile.CreatePath();
+
+        var arguments = new List<string>
+        {
+            ElevatedCommands.AdapterPriorityAction,
+            action,
+            AdapterPriorityResultFile.ResultPathArgument,
+            resultPath,
+        };
+
+        // 带上界面选中的网卡名字：子进程按名字定位，与界面看到的必须是同一张网卡
+        if (!string.IsNullOrWhiteSpace(adapterName))
+        {
+            arguments.Add(ElevatedCommands.AdapterNameOption);
+            arguments.Add(adapterName);
+        }
+
+        AdapterPriorityStatus = ElevationPendingText;
+
+        AdapterPriorityOperationResult? result = await RunElevatedAsync(
+            arguments.ToArray(),
+            resultPath,
+            AdapterPriorityOperationResult.ReadFrom);
+
+        AdapterPriorityStatus = result switch
+        {
+            null => "提权被取消，或已授权但未收到执行结果；请点击「刷新网卡与 DNS」确认。",
+            { Success: true } => BuildAdapterPriorityText(result),
+            _ => result.Message,
+        };
+
+        _services.Log.Info($"系统首选网卡（{action}）结果：{AdapterPriorityStatus}", "网络");
+        OnPropertiesChanged(nameof(CanRestoreAdapterPriority));
+    }
+
+    /// <summary>结果文件里的展示名可能为空（恢复时），为空就只显示结论。</summary>
+    private static string BuildAdapterPriorityText(AdapterPriorityOperationResult result)
+        => string.IsNullOrWhiteSpace(result.AdapterDisplay)
+            ? result.Message
+            : $"{result.Message}（{result.AdapterDisplay}）";
+
+    /// <summary>成功且知道网卡名时补上展示名，让用户确认改的是哪张网卡。</summary>
+    private static string BuildAdapterPriorityText(AdapterPriorityOutcome outcome, string? adapterDisplay)
+        => outcome.Success && !string.IsNullOrWhiteSpace(adapterDisplay)
+            ? $"{outcome.Message}（{adapterDisplay}）"
+            : outcome.Message;
+
+    private void LogAdapterPriority(string action, string? adapterName, AdapterPriorityOutcome outcome)
+    {
+        string target = string.IsNullOrWhiteSpace(adapterName) ? "全部网卡" : $"「{adapterName}」";
+        string message = $"{action}{target}：{outcome.Message}";
+        if (outcome.Success)
+        {
+            _services.Log.Info(message, "网络");
+        }
+        else
+        {
+            _services.Log.Error(message, "网络");
+        }
     }
 
     /// <summary>重新读取当前网卡的 DNS 状态并刷新界面。</summary>

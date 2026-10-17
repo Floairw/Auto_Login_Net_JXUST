@@ -62,6 +62,11 @@ public sealed class AppServices
             Options.Auth.Host,
             Log);
 
+        // 跃点快照必须落盘到数据目录：重启后仍要能一键恢复原值，不能只放内存
+        AdapterPriority = new WindowsAdapterPriorityService(
+            Log,
+            new AdapterPrioritySnapshotStore(Path.Combine(AppPaths.DataDirectory, AdapterPrioritySnapshotStore.FileName)));
+
         AutoStart = new ScheduledTaskAutoStartService(
             Log,
             Path.Combine(AppPaths.DataDirectory, "autostart.json"));
@@ -105,6 +110,9 @@ public sealed class AppServices
     public INetworkAdapterResolver AdapterResolver { get; }
 
     public IDnsService DnsService { get; }
+
+    /// <summary>把某张网卡设为系统首选（修改 IPv4 接口跃点）的服务。</summary>
+    public IAdapterPriorityService AdapterPriority { get; }
 
     public IAutoStartService AutoStart { get; }
 

@@ -55,6 +55,31 @@
                             Style="{StaticResource CaptionTextStyle}" />
                     </StackPanel>
 
+                    <!--
+                        系统首选网卡：通过修改 IPv4 接口跃点让选定网卡真正优先选路。
+                        不禁用其它网卡，因此随时可以一键恢复；两操作都需要管理员权限。
+                    -->
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="系统首选网卡" Style="{StaticResource FieldLabelTextStyle}" />
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <Button
+                                Content="设为系统首选网卡"
+                                Click="SetSystemPreferred_Click" />
+                            <Button
+                                Content="恢复系统自动跃点"
+                                Click="RestoreAdapterPriority_Click"
+                                IsEnabled="{x:Bind ViewModel.CanRestoreAdapterPriority, Mode=OneWay}" />
+                        </StackPanel>
+                        <TextBlock
+                            Text="{x:Bind ViewModel.AdapterPriorityStatus, Mode=OneWay}"
+                            Style="{StaticResource CaptionTextStyle}"
+                            TextWrapping="Wrap" />
+                        <TextBlock
+                            Text="只改 IPv4 接口跃点：选定网卡 10、其余已连接网卡 9000；不禁用网卡。修改会改变系统选路，需要管理员权限（会弹出 UAC），可随时用「恢复系统自动跃点」还原。"
+                            Style="{StaticResource CaptionTextStyle}"
+                            TextWrapping="Wrap" />
+                    </StackPanel>
+
                     <Grid ColumnSpacing="12">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />

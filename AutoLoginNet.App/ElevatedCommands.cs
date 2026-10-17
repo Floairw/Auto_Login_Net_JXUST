@@ -23,6 +23,9 @@ public static class ElevatedCommands
     public const string AdapterNameOption = "--adapter-name";
     public const string HostsAction = "--hosts";
 
+    /// <summary>「设为系统首选网卡 / 恢复系统自动跃点」子命令；值为 apply 或 restore。</summary>
+    public const string AdapterPriorityAction = "--adapter-priority";
+
     /// <summary>
     /// 覆盖 hosts 文件路径。仅供测试与排障使用：
     /// 有了它，整条命令链路可以在不触碰系统 hosts、也不需要 UAC 的情况下端到端验证。
@@ -56,6 +59,11 @@ public static class ElevatedCommands
         if (args.Contains(HostsAction, StringComparer.OrdinalIgnoreCase))
         {
             return RunHostsAsync(args).GetAwaiter().GetResult();
+        }
+
+        if (args.Contains(AdapterPriorityAction, StringComparer.OrdinalIgnoreCase))
+        {
+            return RunAdapterPriorityAsync(args).GetAwaiter().GetResult();
         }
 
         return null;
@@ -101,6 +109,85 @@ public static class ElevatedCommands
         catch
         {
             // 结果回传失败不影响实际写入结果
+        }
+    }
+
+    /// <summary>
+    /// 应用或恢复系统首选网卡（只改 IPv4 接口跃点）。
+    /// <para>
+    /// 与 DNS 子命令同一模式：读参数 → 调服务 → 把结论写回结果文件。
+    /// 结果必须落盘，否则界面只能显示「已请求授权」，用户无从判断是否真的改成功。
+    /// </para>
+    /// </summary>
+    private static async Task<int> RunAdapterPriorityAsync(string[] args)
+    {
+        string action = StartupRouter.ReadOptionValue(args, AdapterPriorityAction)
+            ?? AdapterPriorityPlanner.ApplyAction;
+        string? resultPath = StartupRouter.ReadOptionValue(args, AdapterPriorityResultFile.ResultPathArgument);
+        string? adapterName = StartupRouter.ReadOptionValue(args, AdapterNameOption);
+
+        var services = new AppServices();
+        IAdapterPriorityService priority = services.AdapterPriority;
+
+        bool restore = string.Equals(action, AdapterPriorityPlanner.RestoreAction, StringComparison.OrdinalIgnoreCase);
+
+        AdapterPriorityOutcome outcome;
+        if (restore)
+        {
+            outcome = await priority.RestoreAsync().ConfigureAwait(false);
+        }
+        else if (string.IsNullOrWhiteSpace(adapterName))
+        {
+            // 没有目标网卡就绝不碰系统跃点：宁可失败并说明原因
+            const string reason = "没有指定上网网卡";
+            services.Log.Error(reason, "网络");
+            outcome = AdapterPriorityOutcome.Failure(reason);
+        }
+        else
+        {
+            outcome = await priority.ApplyPreferredAsync(adapterName).ConfigureAwait(false);
+        }
+
+        WriteAdapterPriorityResult(resultPath, outcome, restore, adapterName);
+
+        if (outcome.Success)
+        {
+            services.Log.Info($"系统首选网卡（{(restore ? "恢复" : "应用")}）：{outcome.Message}", "网络");
+        }
+        else
+        {
+            services.Log.Error($"系统首选网卡（{(restore ? "恢复" : "应用")}）失败：{outcome.Message}", "网络");
+        }
+
+        return outcome.Success ? SuccessExitCode : FailureExitCode;
+    }
+
+    /// <summary>把跃点操作结论写入结果文件；失败只影响界面反馈，不影响真实结果与退出码。</summary>
+    private static void WriteAdapterPriorityResult(
+        string? path,
+        AdapterPriorityOutcome outcome,
+        bool restore,
+        string? adapterName)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        try
+        {
+            AdapterPriorityOperationResult.WriteTo(
+                path,
+                new AdapterPriorityOperationResult(
+                    outcome.Success,
+                    restore ? AdapterPriorityPlanner.RestoreAction : AdapterPriorityPlanner.ApplyAction,
+                    adapterName ?? string.Empty,
+                    outcome.Message,
+                    DateTimeOffset.Now));
+        }
+        catch
+        {
+            // 结果回传失败不影响实际设置结果
         }
     }
 

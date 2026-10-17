@@ -105,6 +105,68 @@ public sealed partial class NetworkPage : Page
         }
     }
 
+    // ---------------- 系统首选网卡（IPv4 接口跃点） ----------------
+
+    /// <summary>
+    /// 把当前网卡设为系统首选。
+    /// <para>
+    /// 确认框必须讲清三件事：会改变系统选路、需要 UAC、可一键恢复——
+    /// 用户知道要发生什么、失败了怎么还原，才不会把网络异常误当成程序故障。
+    /// </para>
+    /// </summary>
+    private async void SetSystemPreferred_Click(object sender, RoutedEventArgs e)
+    {
+        bool confirmed = await ShellHelper.ConfirmAsync(
+            XamlRoot,
+            "设为系统首选网卡",
+            "将修改系统 IPv4 接口跃点：选定的上网网卡改为 10，其余已连接网卡改为 9000，"
+            + "让系统优先从这张网卡上网。\n\n"
+            + "这会改变系统选路（可能影响其它网卡上的网络），但不会禁用任何网卡。\n"
+            + "需要管理员权限，点击「确定」后会弹出 UAC 授权窗口；之后可随时点「恢复系统自动跃点」还原。",
+            "确定并提权");
+
+        if (!confirmed)
+        {
+            return;
+        }
+
+        App.MainWindow?.SetBusy(true);
+        try
+        {
+            await ViewModel.SetSystemPreferredAsync();
+        }
+        finally
+        {
+            App.MainWindow?.SetBusy(false);
+        }
+    }
+
+    /// <summary>按上次应用前保存的快照恢复原跃点。</summary>
+    private async void RestoreAdapterPriority_Click(object sender, RoutedEventArgs e)
+    {
+        bool confirmed = await ShellHelper.ConfirmAsync(
+            XamlRoot,
+            "恢复系统自动跃点",
+            "将按上次应用前保存的快照，把各网卡的 IPv4 接口跃点恢复成原值，系统重新按默认跃点自动选路。\n\n"
+            + "需要管理员权限，点击「确定」后会弹出 UAC 授权窗口。是否继续？",
+            "确定并提权");
+
+        if (!confirmed)
+        {
+            return;
+        }
+
+        App.MainWindow?.SetBusy(true);
+        try
+        {
+            await ViewModel.RestoreAdapterPriorityAsync();
+        }
+        finally
+        {
+            App.MainWindow?.SetBusy(false);
+        }
+    }
+
     private async void Ping_Click(object sender, RoutedEventArgs e)
     {
         await ViewModel.PingAsync();
