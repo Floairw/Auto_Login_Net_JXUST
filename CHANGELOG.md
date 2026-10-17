@@ -5,6 +5,33 @@ v2.0 是一次彻底重构，v1.x 的历史记录保留在文件末尾。
 
 ---
 
+## 2026-10-17 — 上网网卡真正生效：改系统 IPv4 跃点
+
+**以前「上网网卡」只是程序自己按名字选路，系统并不知情；现在它能真的改系统首选，而且改得动也退得回。**
+
+- **只改 IPv4 接口跃点**（`AutoLoginNet.Windows\WindowsAdapterPriorityService.cs`）：首选网卡设 10，
+  其余**已连接**网卡设 9000，用 `netsh interface ipv4 set interface <名称> metric=<n>` 落地。
+  选择它的原因是可逆且影响面小：不禁用网卡、不动 IPv6（校园认证与 DNS 查询都走 IPv4）、
+  不碰路由表；断开中的网卡一律不写，避免把「插上就用」的备用网卡锁成低优先级。
+- **先存快照再动系统**（`AutoLoginNet.Core\AdapterPrioritySnapshotStore.cs`，
+  `%AppData%\AutologinForDrcom\adapter-priority.json`）：写不进快照就不改系统；
+  逐条 set 之后**回读两张表校验**，任何一条失败或不生效就倒序回滚（回滚用
+  `CancellationToken.None`，不能被取消打断），回滚完整才删快照，否则保留现场供排查。
+- **回环接口强制排除**：实测本机 `netsh` 把 `Loopback Pseudo-Interface 1` 也标成「已连接」，
+  早期实现会给它写 9000。现在按名称含 `Loopback` / `Pseudo-Interface` / 「回环」判定并跳过；
+  若用户直接拿回环当首选，直接拒绝（「是回环接口，不能作为上网网卡」）。
+  快照里仍记录全部网卡的原值，但恢复时值没变就不会被写。
+- **提权沿用「自身 exe 子命令 + 结果文件」**（`AutoLoginNet.App\ElevatedCommands.cs` 新增
+  `--adapter-priority apply|restore`、`--adapter-name`、`--adapter-priority-result`）：
+  未提权时以管理员身份重启自己、把 `AdapterPriorityOperationResult` 写进
+  `adapter-priority-result-<32hex>.json` 回传；已提权则直调服务。
+- **界面**（`AutoLoginNet.App\Pages\NetworkPage.xaml` 新增「系统首选网卡」卡片）：
+  「设为系统首选网卡」「恢复系统自动跃点」两个按钮 + 状态文本，都会先弹确认框
+  （讲清改跃点、改变系统选路、不禁用网卡、需要 UAC、可以恢复）；恢复按钮只在存在快照时可用。
+- **验证**：单元测试 **243/243** 通过（新增 17 个计划器用例、24 个服务用例含 netsh 假替身、
+  2 个回环用例）；真机读回 9 个接口的跃点表与 netsh 完全一致；非提权跑一次
+  `set` 被系统拒绝 → 服务完整回滚、不残留快照，行为符合预期。
+
 ## 2026-10-17 — 版本号改为 2.0.9.1.dev
 
 **文件名能看出这是开发版，「应用和功能」里仍得是纯数字——版本号从此分成两张面孔。**

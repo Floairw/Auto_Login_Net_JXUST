@@ -74,6 +74,7 @@ pwsh -NoProfile -File .\Setup\Export-Installer.ps1 -FrameworkDependent -BundleRu
 | **凭据安全** | Windows DPAPI（当前用户 + 附加熵）加密；文件复制到其他机器或用户账户下均无法解密 |
 | **DNS 优选** | 用**真实 DNS 查询**测量各公共 DNS 的解析延迟（而非 ICMP Ping），逐项显示首选/备选延迟并给出推荐组合，只改当前上网所用网卡 |
 | **上网网卡选择** | 认证与 DNS 都以选中的网卡为准：默认「自动选择（按默认路由）」，也可在网络工具页或托盘右键菜单里手动指定（按网卡名持久化） |
+| **系统首选网卡** | 把选中的上网网卡真正改成系统首选：只调 **IPv4 接口跃点**（首选 10、其余已连接网卡 9000），不禁用网卡、不改 IPv6；改前把各网卡原跃点存成快照，随时可「恢复系统自动跃点」；需 UAC 提权，回环接口不参与 |
 | **校内域名解析** | 「网络工具 → 修改 hosts 文件」把 16 条 JXUST 校内站点映射写入 hosts，解决「改用公共 DNS 后教务、办事大厅、校园卡等访问不了」；只维护带标记的区块，不动手写条目，写入前自动备份 |
 | **连通性诊断** | Ping 失败自动回退 TCP 443，避免对端丢弃 ICMP 时误判为断网 |
 | **运行日志** | 实时查看、按级别/关键字过滤；密码等敏感字段写入前已脱敏；增量渲染，长日志不卡顿 |
@@ -96,6 +97,7 @@ AutoLoginNet.Core      # 领域逻辑（net10.0，无 Windows 依赖，可跨平
 AutoLoginNet.Windows   # 平台实现（net10.0-windows）
 ├─ DpapiCredentialProtector      # DPAPI 加解密
 ├─ WindowsNetworkAdapterResolver # 按路由选择上网网卡
+├─ WindowsAdapterPriorityService  # netsh 读写 IPv4 接口跃点（先存快照、回读校验、失败回滚）
 ├─ WindowsDnsService             # netsh 读写 DNS
 ├─ WindowsHostsFileService       # hosts 托管块写入（原地写 + 回读校验 + 失败回滚）
 └─ ProcessRunner                 # 外部进程执行（含编码处理）
@@ -331,6 +333,7 @@ dotnet test Auto_Login_Net_JXUST.sln -c Release
 | hosts 写入失败，提示被安全软件拦截 | 火绒等 HIPS 会拦截对 `drivers\etc` 目录的改名/新建；程序已改为原地写入，若仍失败请在该安全软件里放行本程序，或临时退出后重试 |
 | 校内站点访问不了 | 「网络工具 → 修改 hosts 文件」写一次 hosts；只维护带标记的区块，不动手写条目 |
 | 换了地方上网无法认证 | 打开首页的「跳过网络检测，直接认证」再试 |
+| 「设为系统首选网卡」提示提权被取消或失败 | 该操作要改系统网络配置，必须在 UAC 弹窗里点「是」；失败时会话日志有 netsh 的原始错误。若系统跃点被改乱，点同一页的「恢复系统自动跃点」 |
 | DNS 测速中部分服务器显示「—」 | 属正常：这些 DNS 在当前网络下不提供解析服务（校园网通常只放行国内解析器，腾讯 / Google / Cloudflare 的 53 端口会被拦截）。能测出延迟的即为可用，选延迟最低的即可 |
 | 需要详细排查 | 「运行日志」页可实时查看并过滤，或点「打开日志目录」 |
 
