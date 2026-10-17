@@ -90,6 +90,29 @@ public sealed class WindowsNetworkAdapterResolver : INetworkAdapterResolver
         }
     }
 
+    public IReadOnlyList<AdapterInfo> ListAdapters()
+    {
+        var adapters = new List<AdapterInfo>();
+
+        try
+        {
+            foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                AdapterInfo? adapter = Describe(nic);
+                if (adapter is not null)
+                {
+                    adapters.Add(adapter.Value);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"枚举网卡失败：{ex.Message}", "网络");
+        }
+
+        return adapters;
+    }
+
     /// <summary>回退方案：取第一个已连接、拥有 IPv4 网关与非回环地址的网卡。</summary>
     private static AdapterInfo? ResolveByGateway()
     {
@@ -97,12 +120,6 @@ public sealed class WindowsNetworkAdapterResolver : INetworkAdapterResolver
         {
             foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
             {
-                if (nic.OperationalStatus != OperationalStatus.Up
-                    || nic.NetworkInterfaceType is NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel)
-                {
-                    continue;
-                }
-
                 IPInterfaceProperties properties = nic.GetIPProperties();
 
                 bool hasGateway = properties.GatewayAddresses.Any(gateway =>
@@ -114,16 +131,11 @@ public sealed class WindowsNetworkAdapterResolver : INetworkAdapterResolver
                     continue;
                 }
 
-                var unicast = properties.UnicastAddresses.FirstOrDefault(address =>
-                    address.Address.AddressFamily == AddressFamily.InterNetwork);
-
-                if (unicast is null)
+                AdapterInfo? adapter = Describe(nic);
+                if (adapter is not null)
                 {
-                    continue;
+                    return adapter;
                 }
-
-                int index = properties.GetIPv4Properties()?.Index ?? -1;
-                return new AdapterInfo(index, nic.Name, unicast.Address.ToString());
             }
         }
         catch
@@ -132,6 +144,30 @@ public sealed class WindowsNetworkAdapterResolver : INetworkAdapterResolver
         }
 
         return null;
+    }
+
+    /// <summary>把网卡描述成候选上网网卡；不符合条件（已断开、回环、隧道、无 IPv4）时返回 null。</summary>
+    private static AdapterInfo? Describe(NetworkInterface nic)
+    {
+        if (nic.OperationalStatus != OperationalStatus.Up
+            || nic.NetworkInterfaceType is NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel)
+        {
+            return null;
+        }
+
+        IPInterfaceProperties properties = nic.GetIPProperties();
+
+        var unicast = properties.UnicastAddresses.FirstOrDefault(address =>
+            address.Address.AddressFamily == AddressFamily.InterNetwork
+            && !System.Net.IPAddress.IsLoopback(address.Address));
+
+        if (unicast is null)
+        {
+            return null;
+        }
+
+        int index = properties.GetIPv4Properties()?.Index ?? -1;
+        return new AdapterInfo(index, nic.Name, unicast.Address.ToString());
     }
 
     private static bool IsIPv4(string value)

@@ -268,4 +268,7 @@ internal sealed class StubAdapterResolver : INetworkAdapterResolver
         LastToken = cancellationToken;
         return Task.FromResult(_adapter);
     }
+
+    public IReadOnlyList<AdapterInfo> ListAdapters()
+        => _adapter is null ? Array.Empty<AdapterInfo>() : new[] { _adapter.Value };
 }
