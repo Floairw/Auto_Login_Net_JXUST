@@ -185,8 +185,17 @@
             </Border>
 
 
-            <!-- 校内域名解析（hosts） -->
-            <Border Grid.Row="2" Style="{StaticResource AppCardStyle}" Margin="0,0,0,16">
+            <!--
+                校内域名解析（hosts）。
+                卡片是否出现由配置项 Tools:EnableHostsFeature 决定（默认 true）：
+                false 时整块隐藏（连同勾选、按钮与「需要管理员权限」提示），
+                避免用户看到一张操作注定失败的卡片；true 时外观与行为保持不变。
+            -->
+            <Border
+                Grid.Row="2"
+                Style="{StaticResource AppCardStyle}"
+                Margin="0,0,0,16"
+                Visibility="{x:Bind ViewModel.HostsFeatureEnabled, Mode=OneWay, Converter={StaticResource BoolToVis}}">
                 <StackPanel Spacing="14">
                     <Grid>
                         <Grid.ColumnDefinitions>
