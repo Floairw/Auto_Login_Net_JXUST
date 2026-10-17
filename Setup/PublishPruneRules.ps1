@@ -8,11 +8,16 @@
     能正常打开才算「可安全删除」。测试用脚本是 Setup\tmp-bisect2.ps1（临时文件，用完即删）。
 
     实测结论（x64 自包含发布目录，共 44 个候选）：
-      * 43 个删除后应用照常启动；
-      * 唯一的例外是 Microsoft.UI.Xaml.Phone.dll —— 删掉后应用在启动阶段以
-        0xC000027B (STATUS_STOWED_EXCEPTION) 崩溃在 Microsoft.UI.Xaml.dll，故障模块
-        combase.dll，NTSTATUS 0x8007007E（找不到模块）。该文件被 WinUI 按名字动态加载，
-        静态看「没人引用它」，实测却是硬依赖。已列入 $MustKeep。
+      * 42 个删除后应用照常启动；
+      * 两个例外，都删不得：
+        1. Microsoft.UI.Xaml.Phone.dll —— 删掉后应用在启动阶段以
+           0xC000027B (STATUS_STOWED_EXCEPTION) 崩溃在 Microsoft.UI.Xaml.dll，故障模块
+           combase.dll，NTSTATUS 0x8007007E（找不到模块）。该文件被 WinUI 按名字动态加载，
+           静态看「没人引用它」，实测却是硬依赖。已列入 $MustKeep。
+        2. Microsoft.Windows.AppLifecycle.Projection.dll —— 单实例守卫
+           （AutoLoginNet.App\Infrastructure\SingleInstanceGuard.cs，用 AppInstance.FindOrRegisterForKey）
+           上线后，框架依赖发布里删掉它同样会在启动阶段 0xC000027B 崩溃在 combase.dll，
+           NTSTATUS 0x80070002（找不到文件）。已从删除清单移到 $MustKeep。
 
     因此本文件刻意不用白名单式裁剪：WinUI 3 自包含运行时里有大量按名字 LoadLibrary
     的原生 DLL，静态分析无法证明其未被使用，误删的后果是「应用打不开」。
@@ -108,8 +113,6 @@ $StripFileRules = @(
        Reason = 'AssemblyRef 闭包外；删除后实测启动正常'; Evidence = '实测' }
     @{ Name = '未引用投影'; Wildcard = 'Microsoft.Windows.Foundation.Projection.dll'
        Reason = 'AssemblyRef 闭包外；删除后实测启动正常'; Evidence = '实测' }
-    @{ Name = '未引用投影'; Wildcard = 'Microsoft.Windows.AppLifecycle.Projection.dll'
-       Reason = 'AssemblyRef 闭包外；删除后实测启动正常'; Evidence = '实测' }
     @{ Name = '未引用投影'; Wildcard = 'Microsoft.Windows.ApplicationModel.Background.Projection.dll'
        Reason = 'AssemblyRef 闭包外；删除后实测启动正常'; Evidence = '实测' }
     @{ Name = '未引用投影'; Wildcard = 'Microsoft.Windows.Management.Deployment.Projection.dll'
@@ -165,6 +168,8 @@ $MustKeep = @(
        Reason = '同上' }
     @{ Wildcard = 'Microsoft.Web.WebView2.Core.Projection.dll'
        Reason = 'Microsoft.WinUI.dll 的 AssemblyRef 引用了它' }
+    @{ Wildcard = 'Microsoft.Windows.AppLifecycle.Projection.dll'
+       Reason = '单实例守卫经 AppInstance.FindOrRegisterForKey 用到；框架依赖发布下删掉即 0xC000027B（combase 0x80070002）' }
     @{ Wildcard = '*.pri'
        Reason = '资源索引，ms-appx 查找依赖' }
     @{ Wildcard = '*.xbf'
