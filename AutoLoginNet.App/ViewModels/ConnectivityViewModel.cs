@@ -94,6 +94,11 @@ public sealed class ConnectivityViewModel : Mvvm.ObservableObject
     {
         if (_snapshot is null)
         {
+            // 开机自启的静默登录发生在界面检测之前，此时还没有快照：
+            // 登录既然成功就按「已在线、无需认证」合成一份，
+            // 否则登录状态未知会让「注销」按钮一直不可用。
+            var signedIn = new ProbeResult("登录结果", true, TimeSpan.Zero, "登录成功", "-");
+            Snapshot = new NetworkSnapshot(signedIn, signedIn, AuthRequirement.NotRequired, DateTimeOffset.Now);
             return;
         }
 

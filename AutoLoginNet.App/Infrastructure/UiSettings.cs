@@ -23,8 +23,17 @@ public sealed class UiSettings
     /// <summary>登录时跳过网络环境检测，直接提交认证。</summary>
     public bool SkipNetworkCheck { get; set; }
 
-    /// <summary>登录成功后自动最小化到系统托盘。</summary>
-    public bool MinimizeAfterLogin { get; set; }
+    /// <summary>开机自启时最小化到系统托盘，不弹主窗口。</summary>
+    public bool StartMinimizedToTray { get; set; }
+
+    /// <summary>关闭主窗口时最小化到系统托盘，而不是退出程序。</summary>
+    public bool CloseToTray { get; set; }
+
+    /// <summary>
+    /// 手动指定的上网网卡名称；空字符串表示自动（按路由表选择）。
+    /// 名称比索引稳定：网卡重新插拔或驱动重装后索引会变，名称通常不变。
+    /// </summary>
+    public string NetworkAdapterName { get; set; } = string.Empty;
 }
 
 /// <summary>界面偏好的读写。</summary>

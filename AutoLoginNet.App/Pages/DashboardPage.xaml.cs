@@ -72,7 +72,6 @@ public sealed partial class DashboardPage : Page
         if (await ViewModel.TryAutoLoginOnStartupAsync())
         {
             UpdateResultBar();
-            MinimizeIfRequested();
             return;
         }
 
@@ -160,30 +159,6 @@ public sealed partial class DashboardPage : Page
     {
         await ViewModel.LoginAsync();
         UpdateResultBar();
-        MinimizeIfRequested();
-    }
-
-    /// <summary>
-    /// 登录成功后按「界面设置 → 登录成功后最小化到系统托盘」把主窗口收进托盘。
-    /// <para>
-    /// 只处理界面里的登录（手动点击与「启动时自动登录」）；
-    /// <c>--autostart</c> 静默登录走 <see cref="StartupRouter.RunSilentLogin"/>，
-    /// 由 App.OnLaunched 直接退出进程，不经过这里，因此不会被最小化逻辑影响。
-    /// </para>
-    /// </summary>
-    private void MinimizeIfRequested()
-    {
-        if (ViewModel.Stage != LoginStage.Succeeded)
-        {
-            return;
-        }
-
-        if (!App.Services.UiSettings.Current.MinimizeAfterLogin)
-        {
-            return;
-        }
-
-        App.MainWindow?.Minimize();
     }
 
     private async void Logout_Click(object sender, RoutedEventArgs e)

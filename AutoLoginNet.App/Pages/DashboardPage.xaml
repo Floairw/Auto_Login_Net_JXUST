@@ -199,27 +199,34 @@
                             Background="{ThemeResource LayerFillColorDefaultBrush}"
                             CornerRadius="6"
                             Padding="12,10">
-                            <Grid ColumnSpacing="12">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
+                            <StackPanel Spacing="6">
+                                <Grid ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
 
-                                <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Center">
-                                    <TextBlock Text="开机自启" FontWeight="SemiBold" FontSize="13" />
-                                    <TextBlock
-                                        Text="{x:Bind ViewModel.AutoStartStateText, Mode=OneWay}"
-                                        Style="{StaticResource CaptionTextStyle}" />
-                                </StackPanel>
+                                    <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Center">
+                                        <TextBlock Text="开机自启" FontWeight="SemiBold" FontSize="13" />
+                                        <TextBlock
+                                            Text="{x:Bind ViewModel.AutoStartStateText, Mode=OneWay}"
+                                            Style="{StaticResource CaptionTextStyle}" />
+                                    </StackPanel>
 
-                                <ToggleSwitch
-                                    x:Name="AutoStartToggle"
-                                    Grid.Column="1"
-                                    OnContent="已开启"
-                                    OffContent="已关闭"
-                                    IsOn="{x:Bind ViewModel.AutoStartEnabled, Mode=OneWay}"
-                                    Toggled="AutoStartToggle_Toggled" />
-                            </Grid>
+                                    <ToggleSwitch
+                                        x:Name="AutoStartToggle"
+                                        Grid.Column="1"
+                                        OnContent="已开启"
+                                        OffContent="已关闭"
+                                        IsOn="{x:Bind ViewModel.AutoStartEnabled, Mode=OneWay}"
+                                        Toggled="AutoStartToggle_Toggled" />
+                                </Grid>
+
+                                <CheckBox
+                                    Content="开机自启时最小化到系统托盘"
+                                    IsChecked="{x:Bind ViewModel.StartMinimizedToTray, Mode=TwoWay}"
+                                    ToolTipService.ToolTip="勾选后开机自启只在托盘里静默完成登录，不弹出主窗口" />
+                            </StackPanel>
                         </Border>
 
                         <StackPanel Orientation="Horizontal" Spacing="8">

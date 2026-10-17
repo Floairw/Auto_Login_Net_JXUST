@@ -7,6 +7,7 @@ using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using AutoLoginNet.Network;
 using Windows.Graphics;
 
 namespace AutoLoginNet.App;
@@ -28,15 +29,21 @@ public sealed partial class MainWindow : Window
         ["settings"] = typeof(SettingsPage),
     };
 
-    /// <summary>托盘图标。<c>--autostart</c> 的短暂界面路径不需要它（会顺手关掉，免得图标闪一下）。</summary>
+    /// <summary>托盘图标；<c>--autostart</c> 路径也会创建（登录后常驻托盘，不弹窗口）。</summary>
     private readonly TrayIcon? _tray;
 
+    /// <summary>上网网卡选择（托盘菜单与网络页共用同一份偏好）。</summary>
+    private readonly AdapterSwitcher _adapterSwitcher;
+
     private bool _hiddenToTray;
+    private bool _exiting;
     private IntPtr _hwnd;
     private SubclassProc? _subclassProc;
     private bool _activateRetryHooked;
 
-    public MainWindow(bool enableTray = true)
+    /// <param name="enableTray">是否创建托盘图标。</param>
+    /// <param name="startHidden">是否启动即藏进托盘（开机自启且勾选了「最小化到托盘」时使用）。</param>
+    public MainWindow(bool enableTray = true, bool startHidden = false)
     {
         InitializeComponent();
 
@@ -54,15 +61,29 @@ public sealed partial class MainWindow : Window
         Nav.SelectedItem = Nav.MenuItems[0];
         Navigate("dashboard");
 
-        // 托盘：左键/双击还原窗口，右键菜单可还原或退出
+        _adapterSwitcher = new AdapterSwitcher(App.Services);
+
+        // 托盘：左键/双击还原窗口，右键菜单可还原、切换上网网卡或退出
         _tray = enableTray
-            ? new TrayIcon("校园网认证客户端", ShowFromTray, ExitFromTray)
+            ? new TrayIcon(
+                "校园网认证客户端",
+                ShowFromTray,
+                ExitFromTray,
+                BuildTrayAdapterMenu,
+                OnTrayAdapterSelected)
             : null;
 
         // 拦截「最小化」：标题栏的最小化按钮不再缩到任务栏，而是直接藏进托盘
         InstallMinimizeInterceptor();
         AppWindow.Changed += OnAppWindowChanged;
+        AppWindow.Closing += OnAppWindowClosing;
         Closed += OnWindowClosed;
+
+        if (startHidden)
+        {
+            // 开机自启：登录已在后台完成，窗口直接收进托盘，等用户点托盘图标再显示
+            HideToTray();
+        }
     }
 
     /// <summary>主题服务，供设置页调用。</summary>
@@ -107,15 +128,6 @@ public sealed partial class MainWindow : Window
             // 置前失败不影响功能：窗口已由 AppWindow.Show() 显示
         }
     }
-
-    /// <summary>
-    /// 最小化窗口（用于「登录成功后最小化到系统托盘」）。
-    /// <para>
-    /// 行为是「藏到系统托盘」而不是缩到任务栏：托盘常驻，还原入口在托盘图标上。
-    /// 托盘图标没能出现时退回普通最小化，避免窗口藏起来却无处恢复。
-    /// </para>
-    /// </summary>
-    public void Minimize() => HideToTray();
 
     /// <summary>把主窗口藏进系统托盘（任务栏与 Alt+Tab 中都不再出现）。</summary>
     private void HideToTray()
@@ -306,11 +318,65 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// 关闭主窗口：按设置决定「收进托盘」还是「退出程序」。
+    /// <para>
+    /// 拦截的是 <see cref="AppWindow"/> 的 Closing（标题栏关闭按钮与 Alt+F4 都会走这条路），
+    /// 取消后进程继续在托盘常驻，登录状态不受影响。
+    /// 托盘图标没能出现时不吞掉关闭，否则窗口会关不掉。
+    /// </para>
+    /// </summary>
+    private void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
+    {
+        if (_exiting)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!App.Services.UiSettings.Current.CloseToTray || _tray is null || !_tray.IsAvailable)
+            {
+                return;
+            }
+
+            args.Cancel = true;
+            HideToTray();
+        }
+        catch
+        {
+            // 读取设置失败时按「关闭即退出」处理
+        }
+    }
+
     private void OnWindowClosed(object sender, WindowEventArgs args) => DisposeTray();
+
+    /// <summary>托盘右键菜单「上网网卡」的候选列表（枚举网卡很轻，直接在弹菜单时取）。</summary>
+    private TrayAdapterMenu BuildTrayAdapterMenu()
+    {
+        var items = new List<TrayAdapterItem>();
+
+        foreach (AdapterInfo adapter in _adapterSwitcher.ListAdapters())
+        {
+            string label = adapter.Display;
+            if (label.Length > 48)
+            {
+                label = label[..47] + "…";
+            }
+
+            items.Add(new TrayAdapterItem(adapter.Name, label));
+        }
+
+        return new TrayAdapterMenu(items, _adapterSwitcher.PreferredName);
+    }
+
+    /// <summary>托盘菜单切换上网网卡：只保存偏好，DNS 检测与应用在下次刷新时按新网卡解析。</summary>
+    private void OnTrayAdapterSelected(string? name) => _adapterSwitcher.Select(name);
 
     /// <summary>托盘菜单「退出程序」：先摘图标，再关窗口，最后确保进程退出。</summary>
     private void ExitFromTray()
     {
+        _exiting = true;
         DisposeTray();
 
         try

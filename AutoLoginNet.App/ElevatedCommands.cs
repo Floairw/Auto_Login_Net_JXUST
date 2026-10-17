@@ -18,6 +18,9 @@ public static class ElevatedCommands
     public const string RegisterAutoStart = "--register-autostart";
     public const string ApplyDns = "--apply-dns";
     public const string DnsTarget = "--dns-target";
+
+    /// <summary>界面上选定的上网网卡名称；缺省时按默认路由自动解析。</summary>
+    public const string AdapterNameOption = "--adapter-name";
     public const string HostsAction = "--hosts";
 
     /// <summary>
@@ -121,10 +124,13 @@ public static class ElevatedCommands
         string primary = StartupRouter.ReadOptionValue(args, "--primary") ?? string.Empty;
         string backup = StartupRouter.ReadOptionValue(args, "--backup") ?? string.Empty;
         string? resultPath = StartupRouter.ReadOptionValue(args, DnsResultFile.ResultPathArgument);
+        string? adapterName = StartupRouter.ReadOptionValue(args, AdapterNameOption);
 
         var services = new AppServices();
         var resolver = new WindowsNetworkAdapterResolver(services.Log);
-        AdapterInfo? adapter = await resolver.ResolveAsync(target).ConfigureAwait(false);
+
+        // 优先按界面传来的网卡名称定位：用户手动指定的网卡未必是默认路由那张
+        AdapterInfo? adapter = await ResolveAdapterAsync(resolver, adapterName, target).ConfigureAwait(false);
 
         string adapterDisplay = adapter?.Display ?? "(未知网卡)";
 
@@ -154,6 +160,27 @@ public static class ElevatedCommands
         // 子进程没有界面，把结果写回约定文件供主进程读取
         WriteResult(resultPath, ok, action, adapterDisplay, message);
         return ok ? SuccessExitCode : FailureExitCode;
+    }
+
+    /// <summary>
+    /// 定位要改 DNS 的网卡：先按名称精确匹配，名字对不上或没传就回退默认路由解析。
+    /// </summary>
+    private static async Task<AdapterInfo?> ResolveAdapterAsync(
+        WindowsNetworkAdapterResolver resolver,
+        string? adapterName,
+        string target)
+    {
+        if (!string.IsNullOrWhiteSpace(adapterName))
+        {
+            AdapterInfo? named = resolver.ListAdapters()
+                .FirstOrDefault(a => string.Equals(a.Name, adapterName, StringComparison.OrdinalIgnoreCase));
+            if (named is not null)
+            {
+                return named;
+            }
+        }
+
+        return await resolver.ResolveAsync(target).ConfigureAwait(false);
     }
 
     private static void WriteResult(string? path, bool success, string action, string adapterDisplay, string message)

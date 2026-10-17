@@ -106,10 +106,12 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// 开机自启路径：完成登录后拉起并置前主界面，随后退出本进程（窗口随即关闭）。
+    /// 开机自启路径：先静默完成登录，再按设置决定界面形态。
     /// <para>
-    /// 之所以在界面显示后再退出，是因为计划任务的语义是「一次性执行完毕」：
-    /// 让它一直挂着会长期占用一个进程，而用户此刻已经看到结果。
+    /// 登录完成后进程<b>常驻</b>（旧版是闪一下窗口就退出）：勾选了
+    /// 「开机自启时最小化到系统托盘」就只留托盘图标，否则正常显示主窗口。
+    /// 常驻的意义是托盘入口始终可用——用户随时能看状态、注销或切换上网网卡，
+    /// 不必再重新检测网络环境。
     /// </para>
     /// </summary>
     private void RunAutoStartWithInterface()
@@ -127,14 +129,19 @@ public partial class App : Application
             exitCode = 3;
         }
 
-        // 自启路径的窗口只闪一下就让位给主进程，不建托盘图标（否则托盘里会留一个点不动的图标）
-        MainWindow = new MainWindow(enableTray: false);
-        MainWindow.Activate();
-        MainWindow.BringToForeground();
+        // 本次自启已经登录过一次：认领「启动时自动登录」机会，并把结果留给界面还原在线状态
+        Services.MarkStartupLoginCompleted(exitCode == 0);
 
-        // 退出码与自启登录结果一致，便于排查计划任务历史记录
-        Exit();
-        Environment.Exit(exitCode);
+        bool startHidden = Services.UiSettings.Current.StartMinimizedToTray;
+
+        MainWindow = new MainWindow(enableTray: true, startHidden: startHidden);
+        if (!startHidden)
+        {
+            MainWindow.Activate();
+            MainWindow.BringToForeground();
+        }
+
+        FlushPendingForegroundRequest();
     }
 
     /// <summary>把未处理异常写入日志，避免应用静默崩溃且不留线索。</summary>

@@ -66,8 +66,9 @@
                             Content="启动时自动检测网络环境"
                             IsChecked="{x:Bind ViewModel.AutoDetectOnStartup, Mode=TwoWay}" />
                         <CheckBox
-                            Content="登录成功后最小化到系统托盘"
-                            IsChecked="{x:Bind ViewModel.MinimizeAfterLogin, Mode=TwoWay}" />
+                            Content="关闭主窗口时最小化到系统托盘"
+                            IsChecked="{x:Bind ViewModel.CloseToTray, Mode=TwoWay}"
+                            ToolTipService.ToolTip="勾选后点关闭按钮不会退出程序；退出请用托盘菜单的「退出程序」" />
                         <CheckBox
                             Content="登录成功时记住账号密码"
                             IsChecked="{x:Bind ViewModel.RememberCredential, Mode=TwoWay}" />

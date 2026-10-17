@@ -42,6 +42,19 @@
                             Style="{StaticResource CaptionTextStyle}" />
                     </StackPanel>
 
+                    <StackPanel Spacing="6">
+                        <TextBlock Text="上网网卡" Style="{StaticResource FieldLabelTextStyle}" />
+                        <ComboBox
+                            x:Name="AdapterCombo"
+                            HorizontalAlignment="Stretch"
+                            ItemsSource="{x:Bind ViewModel.AdapterOptions}"
+                            DisplayMemberPath="Label"
+                            SelectionChanged="AdapterCombo_SelectionChanged" />
+                        <TextBlock
+                            Text="DNS 测试与应用都以这里选中的网卡为准；托盘图标右键菜单里也能快速切换。"
+                            Style="{StaticResource CaptionTextStyle}" />
+                    </StackPanel>
+
                     <Grid ColumnSpacing="12">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />

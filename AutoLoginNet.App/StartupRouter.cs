@@ -6,8 +6,9 @@ namespace AutoLoginNet.App;
 /// <summary>
 /// 启动模式路由。
 /// <para>
-/// 自启登录走「无界面」路径：不创建窗口、不做任何交互，完成后直接退出。
-/// 这样计划任务拉起进程时不会闪出窗口打断用户。
+/// 自启登录先于界面创建完成：静默认证期间不创建窗口、不做任何交互，
+/// 结束后进程常驻，按界面设置决定「只留托盘」还是「正常显示主窗口」
+/// （见 <see cref="App.RunAutoStartWithInterface"/>）。
 /// </para>
 /// <para>
 /// 注意：非打包（unpackaged）WinUI 应用中 <c>LaunchActivatedEventArgs.Arguments</c> 恒为空字符串，
@@ -46,9 +47,8 @@ public static class StartupRouter
     /// 这样窗口一出现就能看到最终结果，而不是先亮一个「正在登录」再跳变。
     /// </para>
     /// <para>
-    /// 这里不再调用 <see cref="Environment.Exit(int)"/>：退出由
-    /// <see cref="App.OnLaunched"/> 在窗口显示之后负责，
-    /// 否则进程会在窗口来得及渲染前就被终止（表现为「自启只有托盘/无界面」）。
+    /// 这里不调用 <see cref="Environment.Exit(int)"/>：登录结果交回调用方，
+    /// 由 <see cref="App.RunAutoStartWithInterface"/> 决定后续的界面形态并让进程常驻。
     /// </para>
     /// </summary>
     /// <returns>进程退出码。</returns>
@@ -70,7 +70,7 @@ public static class StartupRouter
         try
         {
             services = App.Services;
-            services.Log.Info("以开机自启模式启动，开始静默登录，完成后将显示主界面", "自启");
+            services.Log.Info("以开机自启模式启动，开始静默登录，完成后按设置显示主界面或只留托盘图标", "自启");
 
             LoginCredential? credential = services.CredentialStore.Load();
 

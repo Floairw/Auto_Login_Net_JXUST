@@ -2,6 +2,16 @@ using System.Runtime.InteropServices;
 
 namespace AutoLoginNet.App.Infrastructure;
 
+/// <summary>托盘右键菜单「上网网卡」中的一项。</summary>
+/// <param name="Name">网卡名称；null 表示「自动选择」。</param>
+/// <param name="Label">菜单显示文字。</param>
+public sealed record TrayAdapterItem(string? Name, string Label);
+
+/// <summary>「上网网卡」子菜单的内容。</summary>
+/// <param name="Items">候选网卡。</param>
+/// <param name="SelectedName">当前选中的网卡名称；空表示自动选择。</param>
+public sealed record TrayAdapterMenu(IReadOnlyList<TrayAdapterItem> Items, string? SelectedName);
+
 /// <summary>
 /// 系统托盘图标（Win32 <c>Shell_NotifyIcon</c> 实现）。
 /// <para>
@@ -38,13 +48,22 @@ public sealed class TrayIcon : IDisposable
     private const uint NIM_DELETE = 0x00000002;
 
     private const uint MF_STRING = 0x00000000;
+    private const uint MF_GRAYED = 0x00000001;
+    private const uint MF_POPUP = 0x00000010;
     private const uint MF_SEPARATOR = 0x00000800;
+    private const uint MF_BYCOMMAND = 0x00000000;
 
     private const uint TPM_RETURNCMD = 0x0100;
     private const uint TPM_RIGHTBUTTON = 0x0002;
 
     private const uint MenuShowWindow = 1;
     private const uint MenuExit = 2;
+
+    /// <summary>「上网网卡」子菜单里「自动选择」的命令 id。</summary>
+    private const uint MenuAdapterAutomatic = 10;
+
+    /// <summary>「上网网卡」子菜单里第一个网卡的命令 id，后续按顺序递增。</summary>
+    private const uint MenuAdapterFirst = 100;
 
     /// <summary><c>IDI_APPLICATION</c>：系统默认应用图标。</summary>
     private const int IDI_APPLICATION = 32512;
@@ -57,6 +76,8 @@ public sealed class TrayIcon : IDisposable
     private readonly string _defaultTip;
     private readonly Action _showRequested;
     private readonly Action _exitRequested;
+    private readonly Func<TrayAdapterMenu>? _adapterMenu;
+    private readonly Action<string?>? _adapterSelected;
 
     private WndProcDelegate? _wndProc;
     private string? _className;
@@ -70,11 +91,20 @@ public sealed class TrayIcon : IDisposable
     /// <param name="toolTip">鼠标悬停时的提示文字（过长会自动截断）。</param>
     /// <param name="showRequested">用户要求显示主窗口（左键 / 双击 / 菜单第一项）。</param>
     /// <param name="exitRequested">用户在托盘菜单里选择「退出程序」。</param>
-    public TrayIcon(string toolTip, Action showRequested, Action exitRequested)
+    /// <param name="adapterMenu">右键菜单「上网网卡」子菜单的内容；为 null 时不显示该子菜单。</param>
+    /// <param name="adapterSelected">用户选择上网网卡；参数为 null 表示「自动选择」。</param>
+    public TrayIcon(
+        string toolTip,
+        Action showRequested,
+        Action exitRequested,
+        Func<TrayAdapterMenu>? adapterMenu = null,
+        Action<string?>? adapterSelected = null)
     {
         _defaultTip = toolTip;
         _showRequested = showRequested;
         _exitRequested = exitRequested;
+        _adapterMenu = adapterMenu;
+        _adapterSelected = adapterSelected;
 
         try
         {
@@ -323,7 +353,16 @@ public sealed class TrayIcon : IDisposable
 
         try
         {
+            TrayAdapterMenu? adapterMenu = GetAdapterMenu();
+
             AppendMenuW(menu, MF_STRING, MenuShowWindow, "显示主窗口");
+
+            IntPtr adapterSubmenu = CreateAdapterSubmenu(adapterMenu);
+            if (adapterSubmenu != 0)
+            {
+                AppendMenuW(menu, MF_POPUP | MF_STRING, ToMenuHandle(adapterSubmenu), "上网网卡");
+            }
+
             AppendMenuW(menu, MF_SEPARATOR, 0, null);
             AppendMenuW(menu, MF_STRING, MenuExit, "退出程序");
             SetMenuDefaultItem(menu, MenuShowWindow, 0);
@@ -342,10 +381,25 @@ public sealed class TrayIcon : IDisposable
                 0);
             PostMessageW(_hwnd, WM_NULL, 0, 0);
 
+            if (command >= MenuAdapterFirst)
+            {
+                int index = (int)(command - MenuAdapterFirst);
+                if (adapterMenu is not null && index < adapterMenu.Items.Count)
+                {
+                    SafeInvokeAdapterSelected(adapterMenu.Items[index].Name);
+                }
+
+                return;
+            }
+
             switch (command)
             {
                 case MenuShowWindow:
                     SafeInvoke(_showRequested);
+                    break;
+
+                case MenuAdapterAutomatic:
+                    SafeInvokeAdapterSelected(null);
                     break;
 
                 case MenuExit:
@@ -359,7 +413,88 @@ public sealed class TrayIcon : IDisposable
         }
         finally
         {
+            // DestroyMenu 会连同子菜单一起销毁
             DestroyMenu(menu);
+        }
+    }
+
+    /// <summary>构建「上网网卡」子菜单；请求失败或没有候选网卡时仍返回可用菜单（只有「自动选择」）。</summary>
+    private static IntPtr CreateAdapterSubmenu(TrayAdapterMenu? model)
+    {
+        IntPtr submenu = CreatePopupMenu();
+        if (submenu == 0)
+        {
+            return 0;
+        }
+
+        AppendMenuW(submenu, MF_STRING, MenuAdapterAutomatic, "自动选择");
+
+        if (model is null)
+        {
+            return submenu;
+        }
+
+        uint checkedId = MenuAdapterAutomatic;
+        uint lastAdapterId = MenuAdapterAutomatic;
+
+        IReadOnlyList<TrayAdapterItem> items = model.Items;
+        for (int i = 0; i < items.Count; i++)
+        {
+            uint id = MenuAdapterFirst + (uint)i;
+            AppendMenuW(submenu, MF_STRING, id, items[i].Label);
+            lastAdapterId = id;
+
+            if (items[i].Name is { Length: > 0 } name
+                && string.Equals(name, model.SelectedName, StringComparison.OrdinalIgnoreCase))
+            {
+                checkedId = id;
+            }
+        }
+
+        if (items.Count == 0)
+        {
+            AppendMenuW(submenu, MF_STRING | MF_GRAYED, MenuAdapterFirst, "（未检测到可用网卡）");
+            lastAdapterId = MenuAdapterAutomatic;
+        }
+
+        CheckMenuRadioItem(submenu, MenuAdapterAutomatic, lastAdapterId, checkedId, MF_BYCOMMAND);
+        return submenu;
+    }
+
+    private TrayAdapterMenu? GetAdapterMenu()
+    {
+        if (_adapterMenu is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return _adapterMenu();
+        }
+        catch
+        {
+            // 枚举网卡失败时退化为「只有自动选择」的子菜单
+            return null;
+        }
+    }
+
+    private static UIntPtr ToMenuHandle(IntPtr handle) => (UIntPtr)(ulong)handle.ToInt64();
+
+    private void SafeInvokeAdapterSelected(string? name)
+    {
+        if (_adapterSelected is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _adapterSelected(name);
+        }
+        catch
+        {
+            // 切换网卡失败不能冒到消息循环
         }
     }
 
@@ -485,6 +620,9 @@ public sealed class TrayIcon : IDisposable
 
     [DllImport("user32.dll")]
     private static extern bool SetMenuDefaultItem(IntPtr hMenu, uint uItem, uint fByPos);
+
+    [DllImport("user32.dll")]
+    private static extern bool CheckMenuRadioItem(IntPtr hMenu, uint first, uint last, uint check, uint flags);
 
     [DllImport("user32.dll")]
     private static extern uint TrackPopupMenuEx(IntPtr hMenu, uint uFlags, int x, int y, IntPtr hWnd, IntPtr lptpm);

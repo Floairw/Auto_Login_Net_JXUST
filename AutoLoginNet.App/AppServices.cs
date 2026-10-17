@@ -55,8 +55,10 @@ public sealed class AppServices
         PingService = new PingService(_probe);
         DnsLatencyProbe = new UdpDnsLatencyProbe();
 
+        AdapterResolver = new WindowsNetworkAdapterResolver(Log);
+
         DnsService = new WindowsDnsService(
-            new WindowsNetworkAdapterResolver(Log),
+            AdapterResolver,
             Options.Auth.Host,
             Log);
 
@@ -99,6 +101,9 @@ public sealed class AppServices
     /// <summary>DNS 延迟探测（真实 UDP 查询，而非 ICMP）。</summary>
     public IDnsLatencyProbe DnsLatencyProbe { get; }
 
+    /// <summary>上网网卡解析（路由表优先，网关回退）。DNS 相关功能与托盘菜单共用。</summary>
+    public INetworkAdapterResolver AdapterResolver { get; }
+
     public IDnsService DnsService { get; }
 
     public IAutoStartService AutoStart { get; }
@@ -107,6 +112,14 @@ public sealed class AppServices
     public IHostsFileService HostsFile { get; }
 
     public UiSettingsStore UiSettings { get; }
+
+    /// <summary>
+    /// 开机自启路径的静默登录结果：true 成功、false 失败、null 表示本进程没有走过静默登录。
+    /// <para>
+    /// 界面据此还原「已在线」状态——否则用户打开自启实例后，注销按钮会因为「还没检测过网络环境」而不可用。
+    /// </para>
+    /// </summary>
+    public bool? StartupLoginSucceeded { get; private set; }
 
     /// <summary>
     /// 界面线程队列。视图模型用它把自己的更新合并为一次界面刷新，
@@ -126,6 +139,18 @@ public sealed class AppServices
     /// <returns>本次调用是否为唯一的认领者。</returns>
     public bool TryClaimStartupAutoLogin()
         => Interlocked.CompareExchange(ref _autoLoginClaimed, 1, 0) == 0;
+
+    /// <summary>
+    /// 记录静默登录结果，并认领「启动时自动登录」机会。
+    /// <para>
+    /// 认领必须发生在界面创建之前：静默登录已经登录过一次，界面若再自动登录就会重复认证。
+    /// </para>
+    /// </summary>
+    public void MarkStartupLoginCompleted(bool succeeded)
+    {
+        StartupLoginSucceeded = succeeded;
+        TryClaimStartupAutoLogin();
+    }
 
     /// <summary>
     /// 重建 HttpClient 并让依赖它的服务指向新实例。

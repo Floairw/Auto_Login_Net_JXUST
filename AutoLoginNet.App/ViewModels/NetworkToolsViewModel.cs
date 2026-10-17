@@ -8,6 +8,9 @@ using System.Windows.Input;
 
 namespace AutoLoginNet.App.ViewModels;
 
+/// <summary>上网网卡下拉项。<see cref="Name"/> 为 <c>null</c> 表示「自动选择」。</summary>
+public sealed record AdapterChoice(string? Name, string Label);
+
 /// <summary>网络工具页视图模型：DNS 优选、网速测试与网络诊断。</summary>
 public sealed class NetworkToolsViewModel : ObservableObject
 {
@@ -15,6 +18,9 @@ public sealed class NetworkToolsViewModel : ObservableObject
     private const string ElevationPendingText = "已请求管理员授权，请在 UAC 窗口中确认…";
 
     private readonly AppServices _services;
+
+    /// <summary>上网网卡偏好：托盘菜单与这里共用同一份设置。</summary>
+    private readonly AdapterSwitcher _adapterSwitcher;
 
     private AdapterInfo? _adapter;
     private string _adapterText = "正在解析活动网卡…";
@@ -31,6 +37,7 @@ public sealed class NetworkToolsViewModel : ObservableObject
     public NetworkToolsViewModel(AppServices services)
     {
         _services = services ?? throw new ArgumentNullException(nameof(services));
+        _adapterSwitcher = new AdapterSwitcher(services);
 
         foreach (DnsProvider provider in services.DnsService.Providers)
         {
@@ -46,6 +53,12 @@ public sealed class NetworkToolsViewModel : ObservableObject
     }
 
     public ObservableCollection<DnsCandidateEntry> DnsCandidates { get; } = new();
+
+    /// <summary>可选的上网网卡（首项固定为「自动选择」）。</summary>
+    public ObservableCollection<AdapterChoice> AdapterOptions { get; } = new();
+
+    /// <summary>当前偏好的网卡名称，空字符串表示自动选择。</summary>
+    public string PreferredAdapterName => _adapterSwitcher.PreferredName;
 
     public IReadOnlyList<string> PingTargets => _services.Options.Tools.PingTargets;
 
@@ -116,25 +129,13 @@ public sealed class NetworkToolsViewModel : ObservableObject
         private set => SetProperty(ref _pingResult, value);
     }
 
-    /// <summary>初始化：解析活动网卡并读取当前 DNS。</summary>
+    /// <summary>初始化：枚举上网网卡、按偏好解析当前网卡并读取其 DNS。</summary>
     public async Task InitializeAsync()
     {
         try
         {
-            _adapter = await ResolveAdapterAsync();
-            if (_adapter is null)
-            {
-                AdapterText = "未找到正在使用的网卡";
-                CurrentDnsText = "—";
-                return;
-            }
-
-            AdapterText = _adapter.Value.Display;
-            await RefreshCurrentDnsAsync();
-
-            OnPropertyChanged(nameof(AdapterText));
-            (AutomaticCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
-            (MeasureCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+            RefreshAdapterOptions();
+            await RefreshAdapterAsync();
         }
         catch (Exception ex)
         {
@@ -145,6 +146,53 @@ public sealed class NetworkToolsViewModel : ObservableObject
         {
             await RefreshHostsAsync();
         }
+    }
+
+    /// <summary>重新枚举网卡并刷新下拉项；偏好网卡不在线时也保留它，避免界面莫名跳回「自动」。</summary>
+    public void RefreshAdapterOptions()
+    {
+        AdapterOptions.Clear();
+        AdapterOptions.Add(new AdapterChoice(null, "自动选择（按默认路由）"));
+
+        IReadOnlyList<AdapterInfo> adapters = _adapterSwitcher.ListAdapters();
+        foreach (AdapterInfo adapter in adapters)
+        {
+            AdapterOptions.Add(new AdapterChoice(adapter.Name, adapter.Display));
+        }
+
+        string preferred = _adapterSwitcher.PreferredName;
+        bool preferredPresent = adapters.Any(a => string.Equals(a.Name, preferred, StringComparison.OrdinalIgnoreCase));
+        if (!string.IsNullOrEmpty(preferred) && !preferredPresent)
+        {
+            AdapterOptions.Add(new AdapterChoice(preferred, $"{preferred}（未连接）"));
+        }
+
+        OnPropertyChanged(nameof(PreferredAdapterName));
+    }
+
+    /// <summary>切换上网网卡：保存偏好后立刻按新网卡重读 DNS。</summary>
+    public async Task SelectAdapterAsync(string? name)
+    {
+        _adapterSwitcher.Select(name);
+        await RefreshAdapterAsync();
+    }
+
+    /// <summary>按当前偏好解析网卡并刷新「当前网卡 / 当前 DNS」。</summary>
+    private async Task RefreshAdapterAsync()
+    {
+        _adapter = await _adapterSwitcher.ResolveAsync();
+        if (_adapter is null)
+        {
+            AdapterText = "未找到正在使用的网卡";
+            CurrentDnsText = "—";
+            return;
+        }
+
+        AdapterText = _adapter.Value.Display;
+        await RefreshCurrentDnsAsync();
+
+        (AutomaticCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+        (MeasureCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
     }
 
     /// <summary>测试全部候选 DNS 的解析延迟，并给出推荐组合。</summary>
@@ -286,6 +334,15 @@ public sealed class NetworkToolsViewModel : ObservableObject
             ElevatedCommands.DnsTarget, _services.Options.Auth.Host,
             DnsResultFile.ResultPathArgument, resultPath,
         };
+
+        // 带着界面上选中的网卡名字过去：提权子进程按名字解析，
+        // 与界面看到的必须是同一张网卡（否则「应用到 A 卡」可能落到 B 卡上）
+        if (_adapter is { } adapter && !string.IsNullOrWhiteSpace(adapter.Name))
+        {
+            arguments.Add(ElevatedCommands.AdapterNameOption);
+            arguments.Add(adapter.Name);
+        }
+
         arguments.AddRange(extraArguments);
 
         DnsStatus = pendingText;
@@ -504,9 +561,6 @@ public sealed class NetworkToolsViewModel : ObservableObject
             PingResult = $"测试失败：{ex.Message}";
         }
     }
-
-    private Task<AdapterInfo?> ResolveAdapterAsync()
-        => new WindowsNetworkAdapterResolver(_services.Log).ResolveAsync(_services.Options.Auth.Host);
 
     private async Task MeasureSlotAsync(DnsSlot slot)
     {

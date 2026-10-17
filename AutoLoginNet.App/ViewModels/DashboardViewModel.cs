@@ -52,6 +52,7 @@ public sealed class DashboardViewModel : ObservableObject
     private bool _hasSavedPassword;
     private bool _autoStartEnabled;
     private bool _autoLoginOnStartup;
+    private bool _startMinimizedToTray;
     private bool _autoLoginTriggered;
 
     public DashboardViewModel(AppServices services, ConnectivityViewModel connectivity)
@@ -64,6 +65,7 @@ public sealed class DashboardViewModel : ObservableObject
         // 这两个开关的状态在启动时恢复，因此「跳过网络检测」不需要每次重新勾选
         _skipNetworkCheck = _services.UiSettings.Current.SkipNetworkCheck;
         _autoLoginOnStartup = _services.UiSettings.Current.AutoLoginOnStartup;
+        _startMinimizedToTray = _services.UiSettings.Current.StartMinimizedToTray;
 
         LoginCommand = new AsyncRelayCommand(LoginAsync, () => CanLogin);
         DetectCommand = new AsyncRelayCommand(DetectAsync, () => !IsBusy);
@@ -264,6 +266,23 @@ public sealed class DashboardViewModel : ObservableObject
     }
 
     /// <summary>
+    /// 开机自启时把窗口收进系统托盘（认证结果照常记录，只是不弹窗口）。
+    /// 与「启动时自动登录」独立：前者是计划任务触发的静默登录，后者是手动打开程序时的行为。
+    /// </summary>
+    public bool StartMinimizedToTray
+    {
+        get => _startMinimizedToTray;
+        set
+        {
+            if (SetProperty(ref _startMinimizedToTray, value))
+            {
+                App.Services.UiSettings.Current.StartMinimizedToTray = value;
+                App.Services.UiSettings.Save();
+            }
+        }
+    }
+
+    /// <summary>
     /// 本次启动是否应当自动登录：用户已开启该选项，且本机确实保存了可用凭据。
     /// </summary>
     public bool ShouldAutoLoginOnStartup => _autoLoginOnStartup && HasSavedCredential;
@@ -355,10 +374,13 @@ public sealed class DashboardViewModel : ObservableObject
 
     /// <summary>
     /// 是否可以注销。
-    /// 只在明确检测到「外网可达」时可用——注销会断开网络，
-    /// 不能让用户在离线状态下误点而白白丢掉恢复能力。
+    /// <para>
+    /// 已知在线时当然可用；尚未检测（<see cref="ConnectivityViewModel.HasResult"/> 为 false）时也放开——
+    /// 用户点开程序多半是想断开认证，若因为「还没点检测」把按钮灰着就会卡死在原地。
+    /// 服务器对未在线会话的注销会回 NotOnline，不会造成副作用。
+    /// </para>
     /// </summary>
-    public bool CanLogout => !IsBusy && _connectivity.IsOnline;
+    public bool CanLogout => !IsBusy && (_connectivity.IsOnline || !_connectivity.HasResult);
 
     public string LoginButtonText => _stage switch
     {
@@ -402,7 +424,21 @@ public sealed class DashboardViewModel : ObservableObject
     /// <returns>是否真的发起了自动登录。</returns>
     public async Task<bool> TryAutoLoginOnStartupAsync()
     {
-        if (_autoLoginTriggered || !ShouldAutoLoginOnStartup)
+        if (_autoLoginTriggered)
+        {
+            return false;
+        }
+
+        // 开机自启路径已经在后台静默登录过：这里只还原结果，不能再登录一次
+        bool? startupOutcome = _services.StartupLoginSucceeded;
+        if (startupOutcome.HasValue)
+        {
+            _autoLoginTriggered = true;
+            ApplyStartupLoginOutcome(startupOutcome.Value);
+            return true;
+        }
+
+        if (!ShouldAutoLoginOnStartup)
         {
             return false;
         }
@@ -419,6 +455,27 @@ public sealed class DashboardViewModel : ObservableObject
 
         await LoginAsync();
         return true;
+    }
+
+    /// <summary>
+    /// 把开机自启的静默登录结果同步到界面。
+    /// 成功时要标记在线，否则「注销」按钮会因为没有连接性快照而不可用。
+    /// </summary>
+    private void ApplyStartupLoginOutcome(bool succeeded)
+    {
+        if (succeeded)
+        {
+            Stage = LoginStage.Succeeded;
+            StatusTitle = "已自动登录";
+            StatusMessage = "开机自启已使用保存的凭据完成认证，可直接注销或切换上网网卡。";
+            _connectivity.MarkOnline();
+            HasSavedCredential = _services.CredentialStore.Exists;
+            return;
+        }
+
+        Stage = LoginStage.Failed;
+        StatusTitle = "自动登录未成功";
+        StatusMessage = "开机自启的自动登录没有成功，请检查账号密码与网络后重试。";
     }
 
     /// <summary>检测网络环境。</summary>

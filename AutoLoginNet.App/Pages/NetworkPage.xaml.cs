@@ -23,14 +23,47 @@ public sealed partial class NetworkPage : Page
 
     public NetworkToolsViewModel ViewModel { get; }
 
+    /// <summary>抑制标记：程序性回写下拉选中项时不要触发「切换网卡」。</summary>
+    private bool _suppressAdapterSelection;
+
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
         await ViewModel.InitializeAsync();
+        SyncAdapterSelection();
     }
 
     private async void RefreshAdapter_Click(object sender, RoutedEventArgs e)
     {
         await ViewModel.InitializeAsync();
+        SyncAdapterSelection();
+    }
+
+    /// <summary>把下拉选中项对齐到当前偏好（初始化、刷新、托盘切换后都要对齐一次）。</summary>
+    private void SyncAdapterSelection()
+    {
+        _suppressAdapterSelection = true;
+        try
+        {
+            string preferred = ViewModel.PreferredAdapterName;
+            AdapterCombo.SelectedItem = ViewModel.AdapterOptions
+                .FirstOrDefault(c => string.Equals(c.Name ?? string.Empty, preferred, StringComparison.OrdinalIgnoreCase))
+                ?? ViewModel.AdapterOptions.FirstOrDefault();
+        }
+        finally
+        {
+            _suppressAdapterSelection = false;
+        }
+    }
+
+    private async void AdapterCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressAdapterSelection || AdapterCombo.SelectedItem is not AdapterChoice choice)
+        {
+            return;
+        }
+
+        await ViewModel.SelectAdapterAsync(choice.Name);
+        SyncAdapterSelection();
     }
 
     private async void Measure_Click(object sender, RoutedEventArgs e)

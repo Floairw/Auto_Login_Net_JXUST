@@ -1,4 +1,4 @@
-﻿using AutoLoginNet.App.Infrastructure;
+using AutoLoginNet.App.Infrastructure;
 using AutoLoginNet.App.Mvvm;
 using AutoLoginNet.Configuration;
 using System.Diagnostics;
@@ -19,7 +19,7 @@ public sealed class SettingsViewModel : ObservableObject
     private string _campusSpeedTestUrl;
     private string _internetSpeedTestUrl;
     private bool _autoDetectOnStartup;
-    private bool _minimizeAfterLogin;
+    private bool _closeToTray;
     private bool _rememberCredential;
     private string _statusMessage = string.Empty;
     private string _statusTitle = string.Empty;
@@ -32,7 +32,7 @@ public sealed class SettingsViewModel : ObservableObject
 
         _theme = ThemeService.Parse(services.UiSettings.Current.Theme);
         _autoDetectOnStartup = services.UiSettings.Current.AutoDetectOnStartup;
-        _minimizeAfterLogin = services.UiSettings.Current.MinimizeAfterLogin;
+        _closeToTray = services.UiSettings.Current.CloseToTray;
         _rememberCredential = services.UiSettings.Current.RememberCredential;
 
         AppOptions options = services.Options;
@@ -147,14 +147,18 @@ public sealed class SettingsViewModel : ObservableObject
         }
     }
 
-    public bool MinimizeAfterLogin
+    /// <summary>
+    /// 点关闭按钮时收进系统托盘而不是退出程序。
+    /// 托盘不可用时（图标没能加上）程序会照常退出，避免窗口关不掉。
+    /// </summary>
+    public bool CloseToTray
     {
-        get => _minimizeAfterLogin;
+        get => _closeToTray;
         set
         {
-            if (SetProperty(ref _minimizeAfterLogin, value))
+            if (SetProperty(ref _closeToTray, value))
             {
-                _services.UiSettings.Current.MinimizeAfterLogin = value;
+                _services.UiSettings.Current.CloseToTray = value;
                 Persist();
             }
         }
