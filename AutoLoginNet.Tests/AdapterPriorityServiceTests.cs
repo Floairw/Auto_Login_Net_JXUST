@@ -153,6 +153,51 @@ public sealed class AdapterPriorityServiceTests
         Assert.AreEqual(25, rows[2].Metric, "以太网 2 的路由跃点是 25，WLAN 是 0：这正是系统仍走 WLAN 的原因");
     }
 
+
+    [TestMethod]
+    public void ParseRouteTable_ParsesChineseLocalizedOutput()
+    {
+        // 真机（中文系统）实际输出：Publish/Type 两列是中文「否 手动」，旧实现按英文 No/Yes/Age 匹配，
+        // 一条都解析不出来，界面报「读取不到系统默认路由」。列语义与语言无关，parser 不能再依赖这两个词。
+        const string output = """
+            发布 类型 跃点数 前缀 索引 网关/接口名称
+            --- ---- ------ -------- --- ----------------
+            否   手动 0    0.0.0.0/0    4   10.22.128.1
+            否   手动 0    0.0.0.0/0    9   10.48.164.237
+            否   手动 25   0.0.0.0/0   60   10.31.126.19
+            否   系统 256   10.31.126.0/24  60   以太网 2
+            否   手动 0     127.0.0.0/8    1   On-link
+            """;
+
+        IReadOnlyList<WindowsAdapterPriorityService.NetshRouteRow> rows =
+            WindowsAdapterPriorityService.ParseRouteTable(output);
+
+        Assert.AreEqual(3, rows.Count, "中文系统下也必须能解析出 3 条默认路由");
+        Assert.AreEqual(4, rows[0].Index);
+        Assert.AreEqual("10.22.128.1", rows[0].Gateway);
+        Assert.AreEqual(0, rows[0].Metric);
+        Assert.AreEqual(9, rows[1].Index);
+        Assert.AreEqual(0, rows[1].Metric);
+        Assert.AreEqual(60, rows[2].Index);
+        Assert.AreEqual("10.31.126.19", rows[2].Gateway);
+        Assert.AreEqual(25, rows[2].Metric);
+    }
+
+    [TestMethod]
+    public void ParseRouteTable_SkipsDefaultRouteWithOnLinkGateway()
+    {
+        const string output = """
+            否 手动 0 0.0.0.0/0 4 On-link
+            否 手动 0 0.0.0.0/0 9 10.48.164.237
+            """;
+
+        IReadOnlyList<WindowsAdapterPriorityService.NetshRouteRow> rows =
+            WindowsAdapterPriorityService.ParseRouteTable(output);
+
+        Assert.AreEqual(1, rows.Count, "网关是 On-link 的默认路由没法用 set route 的接口+下一跳定位");
+        Assert.AreEqual(9, rows[0].Index);
+    }
+
     [TestMethod]
     public void ParseRouteTable_SkipsHeaderSeparatorAndGarbageLines()
     {
@@ -1143,15 +1188,19 @@ public sealed class AdapterPriorityServiceTests
             return builder.ToString();
         }
 
-        /// <summary>按真实 netsh 的列宽渲染路由表（Publish Type Met Prefix Idx Gateway/Interface Name）。</summary>
+        /// <summary>
+        /// 按真实 netsh 的列宽渲染路由表（Publish Type Met Prefix Idx Gateway/Interface Name）。
+        /// 故意用中文系统的本地化表头与「否 手动」两列，因为真机就是中文系统，
+        /// 早期实现只认英文 No/Manual 导致真机一条路由都读不到。
+        /// </summary>
         private string RenderRouteTable()
         {
             var builder = new System.Text.StringBuilder();
-            builder.AppendLine("Publish  Type      Met  Prefix                    Idx  Gateway/Interface Name");
-            builder.AppendLine("-------  --------  ----  ------------------------  ---  ---------------------------");
+            builder.AppendLine("发布 类型 跃点数 前缀 索引 网关/接口名称");
+            builder.AppendLine("---- ---- ----- -------- --- ----------------");
             foreach (FakeRoute route in _routes)
             {
-                builder.AppendLine($"No       Manual    {route.Metric,-3}  {route.Prefix,-24}  {route.Index,3}  {route.Gateway}");
+                builder.AppendLine($"否 手动 {route.Metric} {route.Prefix} {route.Index} {route.Gateway}");
             }
 
             return builder.ToString();

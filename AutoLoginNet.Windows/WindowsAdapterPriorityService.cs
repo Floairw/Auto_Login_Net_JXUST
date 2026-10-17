@@ -552,14 +552,11 @@ public sealed partial class WindowsAdapterPriorityService : IAdapterPriorityServ
     /// <summary>
     /// 解析 <c>netsh interface ipv4 show route</c> 的表格，只返回 IPv4 默认路由（0.0.0.0/0）。
     /// <para>
-    /// 真实输出形如（列：Publish Type Met Prefix Idx Gateway/Interface Name）：
-    /// <code>
-    /// No       Manual    0    0.0.0.0/0                   9  10.48.164.237
-    /// No       Manual    25   0.0.0.0/0                  60  以太网 2
-    /// No       System    256  10.31.126.0/24             60  以太网 2
-    /// </code>
-    /// 行首是 Publish（No/Yes/Age），第二列 Type 是单词，第三列 Met、第四列 Prefix、
-    /// 第五列 Idx，其余整段是网关或接口名。
+    /// 列布局固定为 Publish Type Met Prefix Idx Gateway/Interface Name，但 **Publish 与 Type
+    /// 两列是本地化文本**：英文系统是 <c>No Manual</c>，中文系统是 <c>否 手动</c>（真机就是中文系统，
+    /// 早期版本按英文 No/Yes/Age 匹配，导致中文系统一条路由都解析不出来，功能直接失败）。
+    /// 因此这里不依赖 Publish/Type 的取值，改为「按空白切词 + 定位前缀列 0.0.0.0/0」，
+    /// 前缀前一个词是 Met、后两个词是 Idx 与网关，列语义与语言无关。
     /// </para>
     /// <para>
     /// 网关不是 IPv4 地址的行（On-link，或网关列写接口名）无法用
@@ -576,29 +573,30 @@ public sealed partial class WindowsAdapterPriorityService : IAdapterPriorityServ
 
         foreach (string line in output.Split('\n'))
         {
-            Match match = RouteRowRegex().Match(line);
-            if (!match.Success)
+            string[] tokens = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            int prefixIndex = Array.FindIndex(
+                tokens,
+                token => string.Equals(token, DefaultRoutePrefix, StringComparison.Ordinal));
+
+            // 前缀列前面必须有 Met，后面必须有 Idx 与网关；表头/虚线行里没有 0.0.0.0/0，天然被过滤。
+            if (prefixIndex < 1 || prefixIndex + 2 >= tokens.Length)
             {
                 continue;
             }
 
-            // 组 2 是 Prefix：只关心默认路由，其它前缀改了会破坏本机网络。
-            if (!string.Equals(match.Groups[2].Value, DefaultRoutePrefix, StringComparison.Ordinal))
+            // 只关心默认路由；其它前缀改了会破坏本机网络（这里已由 prefixIndex 定位保证）。
+            if (!int.TryParse(tokens[prefixIndex - 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int metric))
             {
                 continue;
             }
 
-            if (!int.TryParse(match.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int metric))
+            if (!int.TryParse(tokens[prefixIndex + 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int index))
             {
                 continue;
             }
 
-            if (!int.TryParse(match.Groups[3].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int index))
-            {
-                continue;
-            }
-
-            string gateway = match.Groups[4].Value.Trim();
+            // 网关列只取第一个词；形如「On-link」「在链路上」不是 IPv4 地址，无法用 set route 定位。
+            string gateway = tokens[prefixIndex + 2];
             if (!IPAddress.TryParse(gateway, out IPAddress? address)
                 || address.AddressFamily != AddressFamily.InterNetwork)
             {
@@ -627,15 +625,6 @@ public sealed partial class WindowsAdapterPriorityService : IAdapterPriorityServ
     /// </summary>
     [GeneratedRegex(@"^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.+?)\s*$", RegexOptions.CultureInvariant)]
     private static partial Regex InterfaceRowRegex();
-
-    /// <summary>
-    /// 路由数据行：Publish（No/Yes/Age）+ Type 单词 + Met + Prefix + Idx + 网关/接口名。
-    /// 表头（Publish 开头）与虚线行都不满足「第一个词是 No/Yes/Age」，天然被过滤。
-    /// </summary>
-    [GeneratedRegex(
-        @"^\s*(?:No|Yes|Age)\s+\w+\s+(\d+)\s+(\S+/\d+)\s+(\d+)\s+(.+?)\s*$",
-        RegexOptions.CultureInvariant | RegexOptions.IgnoreCase)]
-    private static partial Regex RouteRowRegex();
 
     /// <summary>
     /// 状态列判定：英文 connected / 中文 已连接 视为已连接，其余（disconnected、已断开…）视为断开。
