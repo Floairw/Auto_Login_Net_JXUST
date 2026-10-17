@@ -80,6 +80,28 @@ public sealed partial class MainWindow : Window
     [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
     private static extern bool SetForegroundWindow(nint hWnd);
 
+    /// <summary>
+    /// 最小化窗口到任务栏（用于「登录成功后自动最小化窗口」）。
+    /// <para>
+    /// 刻意用 <see cref="OverlappedPresenter.Minimize"/> 而不是 <c>Window.Minimize</c>：
+    /// WinUI 3 的 Window 没有 Minimize 方法，最小化能力在 AppWindow 的呈现器上。
+    /// </para>
+    /// </summary>
+    public void Minimize()
+    {
+        try
+        {
+            if (AppWindow.Presenter is OverlappedPresenter presenter)
+            {
+                presenter.Minimize();
+            }
+        }
+        catch
+        {
+            // 最小化失败不影响登录结果：窗口保持原状即可
+        }
+    }
+
     /// <summary>跳转到指定页面。</summary>
     public void Navigate(string key)
     {
