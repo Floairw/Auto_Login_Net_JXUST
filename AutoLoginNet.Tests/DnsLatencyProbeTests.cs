@@ -92,6 +92,43 @@ public sealed class UdpDnsLatencyProbeTests
         Assert.AreEqual("DNS", result.AttemptedMethod);
     }
 
+    [TestMethod]
+    public async Task MeasureAsync_InvalidSourceAddress_IsUnreachableWithoutThrowing()
+    {
+        var probe = new UdpDnsLatencyProbe();
+
+        ProbeResult result = await probe.MeasureAsync("114.114.114.114", timeoutMs: 400, sourceAddress: "not-an-ip");
+
+        Assert.IsFalse(result.Reachable);
+        Assert.IsTrue(result.Detail.Contains("网卡地址", StringComparison.Ordinal), result.Detail);
+        Assert.IsTrue(result.Detail.Contains("IPv4", StringComparison.OrdinalIgnoreCase), result.Detail);
+    }
+
+    [TestMethod]
+    public async Task MeasureAsync_SourceAddressNotOnThisMachine_FailsInsteadOfFallingBackToDefaultRoute()
+    {
+        var probe = new UdpDnsLatencyProbe();
+
+        // 192.0.2.123 属于保留测试网段，绝不会是本机地址：绑定必须失败，
+        // 而且不能被悄悄换成默认路由那张网卡（那样测的就不是用户指定的网卡了）
+        ProbeResult result = await probe.MeasureAsync("192.0.2.1", timeoutMs: 400, sourceAddress: "192.0.2.123");
+
+        Assert.IsFalse(result.Reachable);
+        Assert.IsTrue(result.Detail.Contains("192.0.2.123", StringComparison.Ordinal), result.Detail);
+    }
+
+    [TestMethod]
+    public async Task MeasureAsync_LocalSourceAddress_IsUsedForProbing()
+    {
+        var probe = new UdpDnsLatencyProbe();
+
+        // 绑定本机回环地址应当成功；探测保留网段地址只会超时，不应抛异常
+        ProbeResult result = await probe.MeasureAsync("192.0.2.1", timeoutMs: 500, sourceAddress: "127.0.0.1");
+
+        Assert.IsFalse(result.Reachable);
+        Assert.AreEqual("DNS", result.AttemptedMethod);
+    }
+
     private static byte[] BuildResponse(ushort id, bool isResponse, int rcode)
     {
         var buffer = new byte[12];

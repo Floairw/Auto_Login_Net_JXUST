@@ -47,7 +47,7 @@ public sealed class NetworkToolsViewModel : ObservableObject
 
         _pingTarget = services.Options.Tools.PingTargets.FirstOrDefault() ?? "baidu.com";
 
-        MeasureCommand = new AsyncRelayCommand(MeasureAsync, () => !_adapter.HasValue || !IsMeasuring);
+        MeasureCommand = new AsyncRelayCommand(MeasureAsync, () => _adapter.HasValue && !IsMeasuring);
         ApplyCommand = new AsyncRelayCommand(ApplyRecommendedAsync, () => _recommended.HasValue);
         AutomaticCommand = new AsyncRelayCommand(SetAutomaticAsync, () => _adapter.HasValue);
         PingCommand = new AsyncRelayCommand(PingAsync, () => !string.IsNullOrWhiteSpace(_pingTarget));
@@ -112,14 +112,17 @@ public sealed class NetworkToolsViewModel : ObservableObject
         {
             if (SetProperty(ref _isMeasuring, value))
             {
-                OnPropertiesChanged(nameof(CanMeasure), nameof(CanApply));
+                OnPropertiesChanged(nameof(CanMeasure), nameof(CanApply), nameof(CanResetDns));
                 (MeasureCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
             }
         }
     }
 
-    /// <summary>是否可以开始 DNS 延迟测试（直接绑定到按钮）。</summary>
-    public bool CanMeasure => !_isMeasuring;
+    /// <summary>是否可以开始 DNS 延迟测试（直接绑定到按钮）：必须先解析到上网网卡。</summary>
+    public bool CanMeasure => _adapter.HasValue && !_isMeasuring;
+
+    /// <summary>是否可以「改为自动获取」：同样只对当前上网网卡生效。</summary>
+    public bool CanResetDns => _adapter.HasValue && !_isMeasuring;
 
     /// <summary>是否已选出可应用的推荐 DNS。</summary>
     public bool CanApply => _recommended.HasValue && !_isMeasuring;
@@ -200,23 +203,68 @@ public sealed class NetworkToolsViewModel : ObservableObject
         _adapter = await _adapterSwitcher.ResolveAsync();
         if (_adapter is null)
         {
-            AdapterText = "未找到正在使用的网卡";
+            // 指定网卡不在线时不回退：宁可提示不可用，也不把 DNS 改到别的网卡上
+            AdapterText = AdapterUnavailableText();
             CurrentDnsText = "—";
-            return;
+        }
+        else
+        {
+            AdapterText = _adapter.Value.Display;
+            await RefreshCurrentDnsAsync();
         }
 
-        AdapterText = _adapter.Value.Display;
-        await RefreshCurrentDnsAsync();
-
+        OnPropertiesChanged(nameof(CanMeasure), nameof(CanResetDns));
         (AutomaticCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
         (MeasureCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
     }
 
-    /// <summary>测试全部候选 DNS 的解析延迟，并给出推荐组合。</summary>
+    /// <summary>
+    /// 取这次 DNS 操作该用的网卡：只认「上网网卡」里选中的那张。
+    /// <para>
+    /// 缓存里的网卡可能已经拔掉/改名，这时重新解析一次；仍拿不到就返回 <c>null</c>，
+    /// 由调用方提示不可用——绝不换成另一张网卡继续操作。
+    /// </para>
+    /// </summary>
+    private async Task<AdapterInfo?> EnsureAdapterAsync()
+    {
+        if (_adapter is { } cached && IsAdapterOnline(cached))
+        {
+            return cached;
+        }
+
+        await RefreshAdapterAsync();
+        return _adapter;
+    }
+
+    /// <summary>网卡是否仍然在线可用（判断按名称，索引会随插拔变化）。</summary>
+    private bool IsAdapterOnline(AdapterInfo adapter)
+        => _adapterSwitcher.ListAdapters()
+            .Any(item => string.Equals(item.Name, adapter.Name, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>指定网卡不可用时给用户看的说明。</summary>
+    private string AdapterUnavailableText()
+    {
+        string preferred = _adapterSwitcher.PreferredName;
+        return preferred.Length > 0
+            ? $"指定的上网网卡「{preferred}」不存在或未连接，请在上方「上网网卡」里重新选择；DNS 测试与修改都不会改用其他网卡。"
+            : "未解析到上网网卡，无法测试或修改 DNS。";
+    }
+
+    /// <summary>
+    /// 测试全部候选 DNS 的解析延迟，并给出推荐组合。
+    /// <para>探测包绑定「上网网卡」选中的那张网卡的地址发出，测到的是这张网卡的真实解析延迟。</para>
+    /// </summary>
     public async Task MeasureAsync()
     {
+        AdapterInfo? adapter = await EnsureAdapterAsync();
+        if (adapter is not { } target)
+        {
+            DnsStatus = AdapterUnavailableText();
+            return;
+        }
+
         IsMeasuring = true;
-        DnsStatus = $"正在测试 {DnsCandidates.Count * 2} 个 DNS 的解析延迟…";
+        DnsStatus = $"正在从「{target.Name}」（{target.IPv4Address}）测试 {DnsCandidates.Count * 2} 个 DNS 的解析延迟…";
 
         try
         {
@@ -228,8 +276,8 @@ public sealed class NetworkToolsViewModel : ObservableObject
             var tasks = new List<Task>();
             foreach (DnsCandidateEntry candidate in DnsCandidates)
             {
-                tasks.Add(MeasureSlotAsync(candidate.Primary));
-                tasks.Add(MeasureSlotAsync(candidate.Backup));
+                tasks.Add(MeasureSlotAsync(candidate.Primary, target.IPv4Address));
+                tasks.Add(MeasureSlotAsync(candidate.Backup, target.IPv4Address));
             }
 
             await Task.WhenAll(tasks);
@@ -237,7 +285,7 @@ public sealed class NetworkToolsViewModel : ObservableObject
             DnsPair? recommended = BuildRecommendation();
             _recommended = recommended;
 
-            DnsStatus = BuildMeasureSummary(recommended);
+            DnsStatus = $"（经由「{target.Name}」）{BuildMeasureSummary(recommended)}";
 
             OnPropertyChanged(nameof(CanApply));
             (ApplyCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
@@ -294,15 +342,22 @@ public sealed class NetworkToolsViewModel : ObservableObject
     /// <summary>把推荐的 DNS 应用到网卡；非管理员时自动请求提权并等待结果。</summary>
     public async Task ApplyRecommendedAsync()
     {
-        if (_recommended is not { } dns || !_adapter.HasValue)
+        if (_recommended is not { } dns)
         {
             DnsStatus = "请先完成 DNS 延迟测试。";
             return;
         }
 
+        AdapterInfo? adapter = await EnsureAdapterAsync();
+        if (adapter is not { } target)
+        {
+            DnsStatus = AdapterUnavailableText();
+            return;
+        }
+
         if (ShellHelper.IsElevated())
         {
-            bool ok = await _services.DnsService.ApplyAsync(_adapter.Value, dns);
+            bool ok = await _services.DnsService.ApplyAsync(target, dns);
             DnsStatus = ok ? $"已应用：{dns.AddressText}" : "应用失败，请查看日志了解详情。";
             await RefreshCurrentDnsAsync();
             return;
@@ -316,14 +371,16 @@ public sealed class NetworkToolsViewModel : ObservableObject
     /// <summary>把 DNS 改回自动获取。</summary>
     public async Task SetAutomaticAsync()
     {
-        if (!_adapter.HasValue)
+        AdapterInfo? adapter = await EnsureAdapterAsync();
+        if (adapter is not { } target)
         {
+            DnsStatus = AdapterUnavailableText();
             return;
         }
 
         if (ShellHelper.IsElevated())
         {
-            bool ok = await _services.DnsService.ResetToAutomaticAsync(_adapter.Value);
+            bool ok = await _services.DnsService.ResetToAutomaticAsync(target);
             DnsStatus = ok ? "已将 DNS 改为自动获取(DHCP)。" : "改为自动获取失败，请查看日志。";
             await RefreshCurrentDnsAsync();
             return;
@@ -583,6 +640,7 @@ public sealed class NetworkToolsViewModel : ObservableObject
     {
         if (!_adapter.HasValue)
         {
+            CurrentDnsText = "—";
             return;
         }
 
@@ -704,12 +762,13 @@ public sealed class NetworkToolsViewModel : ObservableObject
         }
     }
 
-    private async Task MeasureSlotAsync(DnsSlot slot)
+    private async Task MeasureSlotAsync(DnsSlot slot, string sourceAddress)
     {
         try
         {
-            // 用真实的 UDP DNS 查询计时：ICMP 会被多数公共 DNS 丢弃，不能作为可用性依据
-            ProbeResult result = await _services.DnsLatencyProbe.MeasureAsync(slot.Address, 2000);
+            // 用真实的 UDP DNS 查询计时：ICMP 会被多数公共 DNS 丢弃，不能作为可用性依据；
+            // 绑定上网网卡自己的地址，保证测的是这张网卡而不是系统路由表挑的那张
+            ProbeResult result = await _services.DnsLatencyProbe.MeasureAsync(slot.Address, 2000, sourceAddress);
             slot.Apply(result);
         }
         catch

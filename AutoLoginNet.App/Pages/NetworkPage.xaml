@@ -38,7 +38,7 @@
                     <StackPanel Spacing="4">
                         <TextBlock Text="DNS 优选" Style="{StaticResource SectionTitleTextStyle}" />
                         <TextBlock
-                            Text="测试各公共 DNS 的实际延迟，自动选出延迟最低的首选与备选。只会修改当前上网所用的网卡，不会动虚拟网卡。"
+                            Text="测试各公共 DNS 的实际延迟，自动选出延迟最低的首选与备选。测试与修改都只针对下面选中的上网网卡：探测包从这张网卡自己的地址发出，DNS 也只写这张网卡；指定网卡不在线时会提示不可用，不会改用其他网卡，也不会动虚拟网卡。"
                             Style="{StaticResource CaptionTextStyle}" />
                     </StackPanel>
 
@@ -51,7 +51,7 @@
                             DisplayMemberPath="Label"
                             SelectionChanged="AdapterCombo_SelectionChanged" />
                         <TextBlock
-                            Text="DNS 测试与应用都以这里选中的网卡为准；托盘图标右键菜单里也能快速切换。"
+                            Text="DNS 测试与应用都以这里选中的网卡为准（选「自动选择」时才按系统默认路由）；托盘图标右键菜单里也能快速切换。"
                             Style="{StaticResource CaptionTextStyle}" />
                     </StackPanel>
 
@@ -207,7 +207,7 @@
                         <Button
                             Content="改为自动获取"
                             Click="Automatic_Click"
-                                IsEnabled="{x:Bind ViewModel.CanApply, Mode=OneWay}" />
+                                IsEnabled="{x:Bind ViewModel.CanResetDns, Mode=OneWay}" />
                     </StackPanel>
 
                     <InfoBar

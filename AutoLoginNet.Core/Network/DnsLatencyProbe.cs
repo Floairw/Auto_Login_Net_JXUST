@@ -20,8 +20,19 @@ public interface IDnsLatencyProbe
     /// </summary>
     /// <param name="serverAddress">DNS 服务器 IPv4 地址。</param>
     /// <param name="timeoutMs">超时（毫秒）。</param>
+    /// <param name="sourceAddress">
+    /// 探测包必须使用的本地源地址（要测的那张网卡自己的 IPv4 地址）。
+    /// <para>
+    /// 传了就<b>绑定该地址再发包</b>，因此测到的确实是这张网卡的链路；
+    /// 不传则交给系统路由表选源地址——那样测到的可能不是用户指定的那张网卡。
+    /// </para>
+    /// </param>
     /// <param name="cancellationToken">取消标记。</param>
-    Task<ProbeResult> MeasureAsync(string serverAddress, int timeoutMs = 2000, CancellationToken cancellationToken = default);
+    Task<ProbeResult> MeasureAsync(
+        string serverAddress,
+        int timeoutMs = 2000,
+        string? sourceAddress = null,
+        CancellationToken cancellationToken = default);
 }
 
 /// <inheritdoc cref="IDnsLatencyProbe" />
@@ -35,6 +46,7 @@ public sealed class UdpDnsLatencyProbe : IDnsLatencyProbe
     public async Task<ProbeResult> MeasureAsync(
         string serverAddress,
         int timeoutMs = 2000,
+        string? sourceAddress = null,
         CancellationToken cancellationToken = default)
     {
         var stopwatch = Stopwatch.StartNew();
@@ -44,12 +56,27 @@ public sealed class UdpDnsLatencyProbe : IDnsLatencyProbe
             return new ProbeResult(serverAddress, false, TimeSpan.Zero, "不是合法的 IPv4 地址", "DNS");
         }
 
+        // 指定了源地址就必须真的从它发出：UdpClient 绑不上该地址时不会改用默认路由，
+        // 否则「测的是 A 网卡」会悄悄变成「测的是系统选的那张」。
+        IPEndPoint? boundEndPoint = null;
+        if (!string.IsNullOrWhiteSpace(sourceAddress))
+        {
+            if (!IPAddress.TryParse(sourceAddress, out var localAddress) || localAddress.AddressFamily != AddressFamily.InterNetwork)
+            {
+                return new ProbeResult(serverAddress, false, TimeSpan.Zero, $"指定的网卡地址「{sourceAddress}」不是合法的 IPv4 地址", "DNS");
+            }
+
+            boundEndPoint = new IPEndPoint(localAddress, 0);
+        }
+
         ushort queryId = NextQueryId();
         byte[] query = BuildQuery(queryId, ProbeDomain);
 
         try
         {
-            using var client = new UdpClient(server.AddressFamily);
+            using var client = boundEndPoint is null
+                ? new UdpClient(server.AddressFamily)
+                : new UdpClient(boundEndPoint);
             client.Connect(server, 53);
             await client.SendAsync(query, cancellationToken).ConfigureAwait(false);
 
@@ -64,11 +91,15 @@ public sealed class UdpDnsLatencyProbe : IDnsLatencyProbe
                 return new ProbeResult(serverAddress, false, stopwatch.Elapsed, "响应不是有效的 DNS 应答", "DNS");
             }
 
+            string sourceNote = boundEndPoint is null
+                ? string.Empty
+                : $"（源地址 {boundEndPoint.Address}）";
+
             return new ProbeResult(
                 serverAddress,
                 true,
                 stopwatch.Elapsed,
-                $"{ProbeDomain} 解析 {(long)stopwatch.Elapsed.TotalMilliseconds} ms",
+                $"{ProbeDomain} 解析 {(long)stopwatch.Elapsed.TotalMilliseconds} ms{sourceNote}",
                 "DNS");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -84,14 +115,18 @@ public sealed class UdpDnsLatencyProbe : IDnsLatencyProbe
         {
             stopwatch.Stop();
 
-            // 部分网络会丢弃 UDP 53，此时退回 TCP 53 再确认一次
-            bool tcpReachable = await TryTcpAsync(server, timeoutMs, cancellationToken).ConfigureAwait(false);
+            // 部分网络会丢弃 UDP 53，此时退回 TCP 53 再确认一次（同样从指定源地址发出）
+            bool tcpReachable = await TryTcpAsync(server, timeoutMs, boundEndPoint, cancellationToken).ConfigureAwait(false);
             if (tcpReachable)
             {
                 return new ProbeResult(serverAddress, true, stopwatch.Elapsed, $"UDP 不可用，TCP 53 可连通（{ex.SocketErrorCode}）", "TCP");
             }
 
-            return new ProbeResult(serverAddress, false, stopwatch.Elapsed, $"SocketException: {ex.SocketErrorCode}", "DNS");
+            string failure = boundEndPoint is null
+                ? $"SocketException: {ex.SocketErrorCode}"
+                : $"从网卡地址 {boundEndPoint.Address} 发出查询失败：{ex.SocketErrorCode}";
+
+            return new ProbeResult(serverAddress, false, stopwatch.Elapsed, failure, "DNS");
         }
         catch (Exception ex)
         {
@@ -166,11 +201,11 @@ public sealed class UdpDnsLatencyProbe : IDnsLatencyProbe
         return isResponse && rcode == 0;
     }
 
-    private static async Task<bool> TryTcpAsync(IPAddress server, int timeoutMs, CancellationToken cancellationToken)
+    private static async Task<bool> TryTcpAsync(IPAddress server, int timeoutMs, IPEndPoint? boundEndPoint, CancellationToken cancellationToken)
     {
         try
         {
-            using var client = new TcpClient();
+            using var client = boundEndPoint is null ? new TcpClient() : new TcpClient(boundEndPoint);
             using var timeout = new CancellationTokenSource(timeoutMs);
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
 

@@ -6,7 +6,11 @@ namespace AutoLoginNet.App.Infrastructure;
 /// 「当前上网网卡」的选择与解析，网络工具页与托盘右键菜单共用。
 /// <para>
 /// 只保存网卡<b>名称</b>（不保存索引）：网卡重新插拔或驱动重装后索引会变，名称通常不变。
-/// 指定的网卡不存在或已断开时自动回退到系统路由选择，避免用户换网卡后功能直接失效。
+/// </para>
+/// <para>
+/// 指定了网卡就<b>只认这张网卡</b>：它不存在或没连接时解析结果为 <c>null</c>，界面直接提示不可用，
+/// 绝不悄悄换成路由表选出的另一张——否则「测 A 网卡的 DNS、改 A 网卡的 DNS」会落到 B 网卡上。
+/// 只有用户明确选择「自动选择」时，才按默认路由解析。
 /// </para>
 /// </summary>
 public sealed class AdapterSwitcher
@@ -38,7 +42,10 @@ public sealed class AdapterSwitcher
             "网络");
     }
 
-    /// <summary>解析当前上网网卡：优先用指定网卡，找不到时回退到路由表。</summary>
+    /// <summary>
+    /// 解析当前上网网卡：指定了网卡就只返回那张卡（不在线时为 <c>null</c>），
+    /// 只有「自动选择」才回退到路由表。
+    /// </summary>
     public async Task<AdapterInfo?> ResolveAsync(CancellationToken cancellationToken = default)
     {
         string preferred = PreferredName;
@@ -52,7 +59,9 @@ public sealed class AdapterSwitcher
                 }
             }
 
-            _services.Log.Info($"指定的上网网卡「{preferred}」不存在或未连接，回退为自动选择", "网络");
+            // 不回退：DNS 测试与修改都必须落在用户指定的那张网卡上
+            _services.Log.Warn($"指定的上网网卡「{preferred}」不存在或未连接，已跳过（不会改用其他网卡）", "网络");
+            return null;
         }
 
         return await _services.AdapterResolver

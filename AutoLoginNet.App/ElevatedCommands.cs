@@ -223,7 +223,11 @@ public static class ElevatedCommands
 
         if (adapter is null)
         {
-            const string reason = "无法确定目标网卡，DNS 未修改";
+            // 指定了网卡却找不到时不再改别的网卡：换卡改 DNS 比不改更糟
+            string reason = string.IsNullOrWhiteSpace(adapterName)
+                ? "无法确定目标网卡，DNS 未修改"
+                : $"指定的上网网卡「{adapterName}」不存在或未连接，DNS 未修改（不会改用其他网卡）";
+
             services.Log.Error(reason, "DNS");
             WriteResult(resultPath, false, action, adapterDisplay, reason);
             return FailureExitCode;
@@ -250,7 +254,11 @@ public static class ElevatedCommands
     }
 
     /// <summary>
-    /// 定位要改 DNS 的网卡：先按名称精确匹配，名字对不上或没传就回退默认路由解析。
+    /// 定位要改 DNS 的网卡：传了名称就<b>只按名称</b>找，找不到返回 <c>null</c>（由调用方报错），
+    /// 只有「自动选择」（没传名称）才回退默认路由解析。
+    /// <para>
+    /// 不能按名找不到就换一张卡：界面显示的是 A 网卡，改到 B 网卡上属于静默改错目标。
+    /// </para>
     /// </summary>
     private static async Task<AdapterInfo?> ResolveAdapterAsync(
         WindowsNetworkAdapterResolver resolver,
@@ -259,12 +267,8 @@ public static class ElevatedCommands
     {
         if (!string.IsNullOrWhiteSpace(adapterName))
         {
-            AdapterInfo? named = resolver.ListAdapters()
+            return resolver.ListAdapters()
                 .FirstOrDefault(a => string.Equals(a.Name, adapterName, StringComparison.OrdinalIgnoreCase));
-            if (named is not null)
-            {
-                return named;
-            }
         }
 
         return await resolver.ResolveAsync(target).ConfigureAwait(false);
