@@ -57,8 +57,7 @@ public sealed class SettingsViewModel : ObservableObject
 
     public ICommand ResetCommand { get; }
 
-    public string VersionText
-        => $"版本 {typeof(SettingsViewModel).Assembly.GetName().Version?.ToString(3) ?? "未知"}";
+    public string VersionText => $"版本 {AppVersion.Value}";
 
     public string ConfigFilePath => _services.Settings.FilePath;
 

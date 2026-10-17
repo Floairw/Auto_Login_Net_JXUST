@@ -72,7 +72,7 @@ public sealed class AppServices
         UiSettings.Load();
 
         Log.Info(
-            $"应用启动 v{typeof(AppServices).Assembly.GetName().Version?.ToString(3) ?? "?"}，认证服务器 {Options.Auth.Host}:{Options.Auth.Port}",
+            $"应用启动 v{AppVersion.Value}，认证服务器 {Options.Auth.Host}:{Options.Auth.Port}",
             "应用");
     }
 
