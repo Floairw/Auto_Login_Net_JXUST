@@ -2,262 +2,216 @@
 
 本文件记录 Auto_Login_Net_JXUST 的版本变更。
 v2.0 是一次彻底重构，v1.x 的历史记录保留在文件末尾。
+每个日期一个条目，同一天的多项改动合并成该条目下的 `###` 小节。
 
 ---
 
-## 2026-10-18 — 让托盘图标默认显示在任务栏上
+## 2026-10-18
 
-**用户反馈「主界面存在时，最小化托盘也要存在」——最小化进托盘后右下角找不到程序，等于窗口消失了。**
+**本日三件事：让「上网网卡」真正决定系统选路（连默认路由跃点一起改，并修好中文系统的解析）、
+DNS 优选只测只改指定网卡、Windows 11 下把托盘图标放到任务栏上。**
 
-- **根因**：程序一直在创建托盘图标（`Shell_NotifyIconW`，最小化/关闭都正常藏进托盘），
-  但 **Windows 11 默认把新出现的托盘图标折叠进任务栏的「^」溢出面板**，
-  只有用户手动把它拖到任务栏上才会常驻。实测本机 `HKCU\Control Panel\NotifyIconSettings` 下
-  128 条图标设置里只有 8 条 `IsPromoted=1`，本程序所有路径的条目都没有这个值。
-- **修复 1（尽可能常驻）**：新增 `AutoLoginNet.App/Infrastructure/TrayIconPromotion.cs`，
-  读 `HKCU\Control Panel\NotifyIconSettings\<id>`，按 `ExecutablePath` 匹配本进程，
-  `IsPromoted` 缺失时写 1（值为 0 表示用户自己关掉过，尊重不改），随后 `TrayIcon` 用
-  `NIM_DELETE` + `NIM_ADD` 重新添加图标，资源管理器重新读取设置，图标立刻出现在「^」左边。
-  条目 id 无法自己推导（同一路径可有多条不同 id，试过 FNV/SHA1/SHA256/MD5 全部对不上），
-  只能等系统懒创建，所以 `MainWindow` 用 `DispatcherQueueTimer` 轮询重试
-  （前 10 分钟每 15 秒、之后每 5 分钟，确认 Promoted / Hidden 后停止）。
-  实测：`bin\x64\Debug` 那份 exe 启动 7 秒后注册表条目变成 `IsPromoted=1`，图标出现在任务栏常驻区。
-- **修复 2（看不到时的提示）**：每次运行第一次最小化、且图标还没确认常驻时，
-  先弹一次说明框（标题「已最小化到系统托盘」，告诉用户点「^」或去
-  「设置 → 个性化 → 任务栏 → 其他系统托盘图标」里打开），点「确定」后再收进托盘。
-  之所以不是托盘气泡：Win11 对未打包应用实测 `Shell_NotifyIcon(NIF_INFO)` 返回成功但**不显示任何东西**，
-  因此改为 WinUI 对话框（窗口藏起来后就弹不出自己的对话框了，所以必须先提示再藏）。
-- **诊断日志**：托盘图标添加失败时不再静默——最小化会记「托盘图标不可用，已改为普通最小化
-  （进程可能处于低完整性级别，或资源管理器还未就绪）」；成功收进托盘记「已最小化到系统托盘」，
-  常驻设置成功/被用户关闭分别记一条。实测本机 `bin\Debug` 产物目录继承了 Low Mandatory Level，
-  exe 是低完整性进程，`Shell_NotifyIcon` 直接失败——这类情况现在一眼能在日志里看到。
-- **文档**：README「托盘图标与退出」补 Windows 11 折叠原理、条目懒创建与轮询、首次最小化提示；
-  故障排查新增两行（只在「^」里看到图标 / 日志说托盘图标不可用）。
+### 系统首选网卡：连默认路由跃点一起改
 
----
-
-## 2026-10-18 — DNS 优选只测、只改「指定网卡」
-
-**用户要求：「DNS优选功能只修改和测试指定网卡的DNS」。核对代码发现三处都与这个要求不符，
-最要命的是两处静默换卡和一处不绑源地址的探测。**
-
-- **根因 1（改错网卡）**：`AdapterSwitcher.ResolveAsync` 在指定网卡（如已被拔掉的「以太网 2」）
-  找不到时，直接回退成「按认证服务器路由解析」，界面显示的「当前网卡」和随后写入的 DNS
-  都变成了另一张卡（WLAN / 新的手机共享网卡）；提权子进程 `ElevatedCommands.ResolveAdapterAsync`
-  同样按名找不到就换路由解析——两处都只记一行日志，用户看到的却是「改成功了」。
-- **根因 2（测错网卡）**：`UdpDnsLatencyProbe` 的 `UdpClient` 不绑定本地地址，
-  探测包按系统路由表出网；界面上写着「测的是这张卡」，实际测到的可能是另一张卡。
-- **修复（Core）**：`IDnsLatencyProbe.MeasureAsync` 增加 `sourceAddress` 参数，
-  实现里用 `new UdpClient(new IPEndPoint(local, 0))` / `new TcpClient(new IPEndPoint(local, 0))`
-  绑定该网卡地址后再发查询（TCP 53 回退同样绑定）；地址缺失或非法时返回明确说明而不是改用默认路由，
-  绑定失败（地址不在本机）也会以「从网卡地址 X 发出查询失败」结束，不会静默落到别的网卡。
-- **修复（App）**：`AdapterSwitcher.ResolveAsync` 改为指定网卡找不到就返回 `null`
-  （日志 Warning「已跳过（不会改用其他网卡）」），只有「自动选择」才按路由解析；
-  `NetworkToolsViewModel` 增加 `EnsureAdapterAsync`（缓存网卡已拔掉时重新解析），
-  测试前/应用前都先确认目标卡还在，不可用就只提示「指定的上网网卡「X」不存在或未连接…」并中止；
-  `MeasureSlotAsync` 把网卡 IPv4 地址作为源地址传入探测；
-  测试状态文本与结果带上「（经由「X」）」「正在从「X」（IP）测试…」，让用户一眼看出测的是哪张卡；
-  `ElevatedCommands` 按名找不到时返回失败结果文件「指定的上网网卡「X」不存在或未连接，DNS 未修改（不会改用其他网卡）」。
-- **顺手修掉的两个界面问题**：「改为自动获取」按钮原来绑 `CanApply`（要等测试出推荐才可用），
-  改为独立的 `CanResetDns`；`MeasureCommand` 的可执行条件原来写反（没有网卡时反而可点），
-  改为 `_adapter.HasValue && !IsMeasuring`，按钮在指定网卡不可用时是灰的。
-- **界面文案**：网络工具页 DNS 卡片说明改为「测试与修改都只针对下面选中的上网网卡：探测包从这张网卡自己的地址发出，
-  DNS 也只写这张网卡；指定网卡不在线时会提示不可用，不会改用其他网卡，也不会动虚拟网卡」。
-- **测试**：新增 3 个用例（源地址非法、源地址不在本机必须失败而不是回退、本机回环源地址可正常发起探测并超时）；
-  全量 **277/277** 通过（原 274 + 3）。App 用临时 `OutputPath` 编译验证 0 警告 0 错误。
-- **README**：功能表 DNS 优选 / 上网网卡选择两行改为「绑定指定网卡 IP 发出」「只认这张卡」；
-  故障排查新增「提示指定的上网网卡不存在」「测出的延迟像是别的网卡的」两行。
-
-## 2026-10-18 — 跃点改完立刻生效：清空系统目标缓存
-
-**用户问「如何让跃点数的修改对现有软件生效？」——真机复现发现根因在 Windows 目标缓存（destination cache），
-不是跃点没改对。**
-
-- **真机现象**：手机 USB 共享恢复后（网卡从「以太网 2」变成「以太网 3」），
-  `Get-NetRoute 0.0.0.0/0` 显示以太网 3 有效跃点 25、WLAN 9035，
-  `Find-NetRoute -RemoteIPAddress 8.8.8.8` 已返回以太网 3（说明排序生效了），
-  但 `Test-NetConnection 1.1.1.1 -Port 443` 的 SourceAddress 仍是 WLAN 的 10.99.233.207；
-  `netsh interface ipv4 show destinationcache` 里 WLAN 接口下的 8.8.8.8 / 1.1.1.1 条目
-  下一跳仍是 WLAN 网关——**旧下一跳被目标缓存钉住了**。
-- **结论**：跃点改动对**新建连接**立即生效；已建立的连接不会迁移；
-  目标缓存可以手动清（`netsh interface ipv4 delete destinationcache`，需管理员），
-  不清也会随条目过期自行恢复。
-- **修复**：`WindowsAdapterPriorityService` 在 apply/restore **成功后**调用
-  `TryFlushDestinationCacheAsync`（`netsh interface ipv4 delete destinationcache`），
-  把缓存里的旧下一跳清掉，点完按钮后新连接立刻走新网卡；这一步是「尽力而为」，
-  失败只记 `Warning`「清空系统目标缓存失败（不影响跃点设置）」，不影响「跃点已改好」的结论。
-- **测试**：新增 3 个用例（apply 后清缓存、restore 后清缓存、清缓存失败仍算成功）；
-  假 netsh 增加 `DestinationCacheFails` 开关；全量 **274/274** 通过（原 271 + 3）。
-- **界面**：网络工具页的说明补一句「点完会顺带清空系统目标缓存，新建的连接立即按新跃点选路；
-  已经建立的连接不会迁移，需要重启对应软件才会换路径。」
-- **重启后仍需重新点一次**：默认路由跃点只写到 `store=active`，重启由系统重建。
-
-## 2026-10-18 — 修复：中文系统上「读取不到系统默认路由」
-
-**上一节的功能一上真机就失败：用户点「设为系统首选网卡」，弹窗报「读取不到系统默认路由，无法设置系统首选网卡」，
-日志里是「没有从 netsh 输出里解析到 IPv4 默认路由（0.0.0.0/0）」。根因不是权限，是解析器只认英文表。**
-
-- **根因**：`netsh interface ipv4 show route` 的前两列（Publish / Type）是**本地化文本**，
-  中文系统输出是 `否 手动 0 0.0.0.0/0 4 10.22.128.1`，而解析器用的正则写死了
-  `(?:No|Yes|Age)\s+\w+`，于是**一行都匹配不上**；接口表是「数字开头」的硬约束所以没受影响，
-  只有路由表全空，apply 直接失败（幸好失败在动系统之前，系统没被改坏）。
-- **修复**（`AutoLoginNet.Windows\WindowsAdapterPriorityService.cs` 的 `ParseRouteTable`）：
-  不再依赖 Publish/Type 的取值，改成「按空白切词 → 定位前缀列 `0.0.0.0/0`」，
-  前缀前一个词是 Met、后两个词是 Idx 与网关；列语义与语言无关，中英文系统都能解析。
-  网关不是 IPv4 地址（On-link / 在链路上）的行仍然跳过。
-- **测试**：新增「中文系统真实输出」与「默认路由网关是 On-link」两个解析用例；
-  服务层假 netsh 的路由表渲染也改成**中文表头 + 否/手动**，让所有 apply/restore 用例都在
-  中文输出下跑一遍；全量 **271/271** 通过（原 269 + 2）。
-- **真机验证**：非提权只读探针直接调用服务读路由，解析出 3 条默认路由
-  （以太网 0 / WLAN 0 / 以太网 2 25），与 `Get-NetRoute` 完全一致。
-
-## 2026-10-18 — 首选网卡真正影响选路：连默认路由跃点一起改
-
-**只改接口跃点还不够：这台机器的默认路由自带显式跃点，Windows 依旧按路由选路，认证照样从 WLAN 走。**
-
-- **真机根因**：接口跃点已改（以太网 2 = 10、WLAN = 9000），但
-  `Get-NetRoute -DestinationPrefix 0.0.0.0/0` 显示 WLAN 的路由跃点仍是 0、
-  以太网 2 仍是 25，`Find-NetRoute -RemoteIPAddress 8.8.8.8` 与认证服务器地址都返回
-  **InterfaceAlias WLAN**。Windows 选默认路由比的是「路由自身跃点 + 接口跃点」，
-  而这两条是带显式跃点的 Manual 路由，接口跃点 10/9000 抵消不了 0 vs 25 的差距。
+- **真机根因**：只改接口跃点不够。接口跃点已改（以太网 2 = 10、WLAN = 9000），但
+  `Get-NetRoute -DestinationPrefix 0.0.0.0/0` 显示 WLAN 的默认路由跃点仍是 0、以太网 2 仍是 25，
+  `Find-NetRoute -RemoteIPAddress 8.8.8.8` 与认证服务器地址都返回 **InterfaceAlias WLAN**。
+  Windows 选默认路由比的是「路由自身跃点 + 接口跃点」，这两条是带显式跃点的 Manual 路由，
+  接口跃点 10/9000 抵消不了 0 vs 25 的差距。
 - **新增默认路由跃点调整**（`AutoLoginNet.Core\Network\AdapterPriority.cs` 新增
   `AdapterRouteState` / `AdapterRouteChange` / `AdapterRoutePlan`、
   `AdapterPriorityPlanner.CreateRouteApplyPlan`）：首选网卡的 `0.0.0.0/0` 路由跃点设 0，
-  其余网卡的默认路由设 9000；首选网卡没有默认路由时明确报错「没有默认路由（没有可用网关）」。
-  **断开网卡的默认路由一律不写**：真机上断开网卡也会留在路由表里，但在断开接口上执行
-  `set route` 不可靠，报错会导致整单回滚；而它不写也不会抢路——选路比的是
-  「路由跃点 + 接口跃点」，断开网卡 0+25=25，首选网卡 0+10=10，仍首选优先。
+  其余网卡设 9000；首选网卡没有默认路由时明确报错「没有默认路由（没有可用网关）」。
+  **断开网卡的默认路由一律不写**：断开接口上执行 `set route` 不可靠、报错会导致整单回滚，
+  而它不写也不会抢路（选路比「路由跃点 + 接口跃点」，断开网卡 0+25=25 仍大于首选 0+10=10）。
   命令用 `netsh interface ipv4 set route 0.0.0.0/0 <接口名> <下一跳网关> metric=<n> store=active`，
-  **store=active** 让改动只到下次重启——重启后 DHCP 会重建路由，不留持久化垃圾；
-  接口跃点仍保持持久化，两者都记进快照。
-- **快照与恢复同时覆盖路由**（`AdapterPrioritySnapshot` 新增可空 `Routes`，
-  旧版快照文件仍可读）：恢复时按「网卡名 + 下一跳」匹配当前路由写回原跃点；
-  网关都变了的旧路由不硬写，避免写回一条已经失效的网关。
-- **重复应用不会覆盖原值**（新增 `AdapterPriorityPlanner.CreateSnapshot`）：
-  已有旧快照时保留旧的原跃点（按网卡名、网卡名+下一跳匹配），
-  否则「设置 → 再设置 → 恢复」会把中间状态当成出厂状态，真机上已经踩到。
-  系统里已消失的网卡/路由从新快照里丢弃（无法恢复），新出现的按当前值记录。
-- **失败回滚**先回滚默认路由、再回滚接口跃点（两者都倒序、用 `CancellationToken.None`），
-  回滚完整才删快照；回读校验同样覆盖两张表。
-- **界面文案**（`AutoLoginNet.App\Pages\NetworkPage.xaml`、`NetworkToolsViewModel.cs`）
-  改成「同时改两处 IPv4 跃点」，并说明默认路由改动只保留到下次重启。
-- **验证**：计划器新增 13 个路由/快照用例（含「重复 apply 保留最早原值」），
-  服务层用假 netsh 内存表覆盖成功、失败回滚、恢复、旧快照、首选无路由等场景；
-  真机复测用 `Find-NetRoute` 确认 `InterfaceAlias` 从 WLAN 翻到以太网 2。
+  **store=active** 让路由改动只到下次重启（重启后 DHCP 重建，不留持久化垃圾），接口跃点仍持久化。
+- **快照与恢复同时覆盖路由**（`AdapterPrioritySnapshot` 新增可空 `Routes`，旧快照文件仍可读）：
+  恢复时按「网卡名 + 下一跳」匹配写回原跃点，网关都变了的旧路由不硬写；
+  新增 `AdapterPriorityPlanner.CreateSnapshot` 合并旧快照——重复点「设为系统首选网卡」不会把中间值
+  当成原值（真机已踩到），系统里消失的网卡/路由从新快照丢弃，新出现的按当前值记录。
+- **失败回滚**先回滚默认路由、再回滚接口跃点（都倒序、用 `CancellationToken.None`），
+  回滚完整才删快照；回读校验覆盖两张表。
+- 界面文案（`AutoLoginNet.App\Pages\NetworkPage.xaml`、`NetworkToolsViewModel.cs`）改成
+  「同时改两处 IPv4 跃点」，并说明默认路由的改动只保留到下次重启。
+- 验证：计划器新增 13 个路由/快照用例（含「重复 apply 保留最早原值」），服务层假 netsh 内存表覆盖
+  成功、失败回滚、恢复、旧快照、首选无路由等场景；真机 `Find-NetRoute` 的 InterfaceAlias 从 WLAN 翻到以太网 2。
 
-## 2026-10-17 — 上网网卡真正生效：改系统 IPv4 跃点
+### 修复：中文系统上「读取不到系统默认路由」
 
-**以前「上网网卡」只是程序自己按名字选路，系统并不知情；现在它能真的改系统首选，而且改得动也退得回。**
+- **现象**：上面这个功能一上真机就失败——点「设为系统首选网卡」报「读取不到系统默认路由，无法设置系统首选网卡」，
+  日志「没有从 netsh 输出里解析到 IPv4 默认路由（0.0.0.0/0）」。根因不是权限。
+- **根因**：`netsh interface ipv4 show route` 的前两列（Publish / Type）是**本地化文本**，
+  中文系统输出是 `否 手动 0 0.0.0.0/0 4 10.22.128.1`，而解析器的正则写死了
+  `(?:No|Yes|Age)\s+\w+`，于是**一行都匹配不上**；接口表是「数字开头」的硬约束所以没受影响，
+  只有路由表全空，apply 在动系统之前就失败（系统没被改坏）。
+- **修复**（`AutoLoginNet.Windows\WindowsAdapterPriorityService.cs` 的 `ParseRouteTable`）：
+  不再依赖 Publish/Type 的取值，改成「按空白切词 → 定位前缀列 `0.0.0.0/0`」，
+  前缀前一个词是 Met、后两个词是 Idx 与网关，列语义与语言无关；网关是 On-link / 在链路上的行仍然跳过。
+- 测试：新增「中文系统真实输出」与「默认路由网关是 On-link」两个解析用例；假 netsh 的路由表渲染也改成
+  **中文表头 + 否/手动**，让所有 apply/restore 用例都在中文输出下跑一遍；
+  真机只读探针解析出 3 条默认路由，与 `Get-NetRoute` 完全一致。
 
-- **只改 IPv4 接口跃点**（`AutoLoginNet.Windows\WindowsAdapterPriorityService.cs`）：首选网卡设 10，
+### 跃点改完立刻生效：清空系统目标缓存
+
+- **现象**（用户问「如何让跃点数的修改对现有软件生效？」）：跃点已改对、
+  `Find-NetRoute` 已返回新网卡，但 `Test-NetConnection 1.1.1.1 -Port 443` 的 SourceAddress 仍是 WLAN；
+  `netsh interface ipv4 show destinationcache` 里 WLAN 接口下 8.8.8.8 / 1.1.1.1 的下一跳
+  还是 WLAN 网关——**旧下一跳被目标缓存钉住了**。
+- **结论**：跃点改动对**新建连接**立即生效，已建立的连接不会迁移；目标缓存不清也会随条目过期恢复。
+- **修复**：`WindowsAdapterPriorityService` 在 apply/restore **成功后**调用 `TryFlushDestinationCacheAsync`
+  （`netsh interface ipv4 delete destinationcache`），点完按钮新连接立刻按新跃点选路；
+  这一步是「尽力而为」，失败只记 Warning「清空系统目标缓存失败（不影响跃点设置）」。
+- 测试：新增 3 个用例（apply 后清缓存、restore 后清缓存、清缓存失败仍算成功），假 netsh 增加
+  `DestinationCacheFails` 开关；界面说明补一句「新建的连接立即按新跃点选路，已建立的连接需重启对应软件」。
+
+### DNS 优选只测、只改「上网网卡」里选的卡
+
+- **根因 1（改错卡）**：`AdapterSwitcher.ResolveAsync` 在指定网卡（如已被拔掉的「以太网 2」）找不到时，
+  回退成「按认证服务器路由解析」，界面显示的网卡和随后写入的 DNS 都换成另一张卡；
+  提权子进程 `ElevatedCommands.ResolveAdapterAsync` 同样按名找不到就换路由解析，两处都只记一行日志。
+- **根因 2（测错卡）**：`UdpDnsLatencyProbe` 的 `UdpClient` 不绑定本地地址，探测包按系统路由表出网。
+- **修复（Core）**：`IDnsLatencyProbe.MeasureAsync` 增加 `sourceAddress` 参数，
+  用 `new UdpClient(new IPEndPoint(local, 0))` / `new TcpClient(new IPEndPoint(local, 0))` 绑定后发查询
+  （TCP 53 回退同样绑定）；地址缺失/非法、地址不在本机都返回明确说明，绝不静默落到默认路由。
+- **修复（App）**：`AdapterSwitcher.ResolveAsync` 指定网卡找不到就返回 `null`
+  （Warning「已跳过（不会改用其他网卡）」），只有「自动选择」才按路由解析；
+  `NetworkToolsViewModel` 增加 `EnsureAdapterAsync`，测试/应用前确认目标卡还在，
+  不可用就只提示「指定的上网网卡「X」不存在或未连接…」并中止；`MeasureSlotAsync` 把网卡 IPv4 地址
+  作为源地址传入探测，状态文本带「（经由「X」）」「正在从「X」（IP）测试…」；
+  `ElevatedCommands` 找不到时写失败结果「指定的上网网卡「X」不存在或未连接，DNS 未修改（不会改用其他网卡）」。
+- **顺手修掉两个界面问题**：「改为自动获取」原来绑 `CanApply`（要等测试出推荐才可用），改为独立的
+  `CanResetDns`；`MeasureCommand` 的可执行条件原来写反，改为 `_adapter.HasValue && !IsMeasuring`。
+- 测试：新增 3 个源地址用例（非法地址、地址不在本机必须失败而不是回退、回环源地址可正常发起探测）；
+  全量 **277/277** 通过。README 功能表与故障排查同步。
+
+### 托盘图标默认显示在任务栏
+
+- **现象与根因**（用户反馈「主界面存在时，最小化托盘也要存在」）：程序一直在创建托盘图标
+  （`Shell_NotifyIconW`，最小化/关闭都正常藏进托盘），但 **Windows 11 默认把新出现的托盘图标
+  折叠进任务栏的「^」溢出面板**，用户最小化后就以为程序消失了。本机
+  `HKCU\Control Panel\NotifyIconSettings` 下 128 条图标设置里只有 8 条 `IsPromoted=1`，
+  本程序所有路径的条目都没有这个值。
+- **修复 1（尽可能常驻）**：新增 `AutoLoginNet.App\Infrastructure\TrayIconPromotion.cs`，
+  读 `HKCU\Control Panel\NotifyIconSettings\<id>`，按 `ExecutablePath` 匹配本进程，
+  `IsPromoted` 缺失时写 1（值为 0 表示用户自己关掉过，尊重不改），随后 `TrayIcon` 用
+  `NIM_DELETE` + `NIM_ADD` 重新添加图标，资源管理器重读设置后图标立刻出现在「^」左边。
+  条目 id 无法自己推导（同一路径可有多条不同 id，FNV/SHA1/SHA256/MD5 全试过都对不上），
+  只能等系统懒创建，所以 `MainWindow` 用 `DispatcherQueueTimer` 轮询重试
+  （前 10 分钟每 15 秒、之后每 5 分钟，确认 Promoted / Hidden 后停止）。
+  实测 `bin\x64\Debug` 那份 exe 启动 7 秒后注册表条目变成 `IsPromoted=1`，图标出现在任务栏常驻区。
+- **修复 2（看不到时的提示）**：每次运行第一次最小化、且图标还没确认常驻时，先弹一次说明框
+  （标题「已最小化到系统托盘」，告诉用户点「^」或去「设置 → 个性化 → 任务栏 → 其他系统托盘图标」里打开），
+  点「确定」后再收进托盘。没用托盘气泡：Win11 对未打包应用实测 `Shell_NotifyIcon(NIF_INFO)`
+  返回成功却**不显示任何东西**；而窗口藏起来后又弹不出自己的对话框，所以只能先提示再藏。
+- **诊断日志**：托盘图标添加失败不再静默——最小化会记「托盘图标不可用，已改为普通最小化
+  （进程可能处于低完整性级别，或资源管理器还未就绪）」，成功收进托盘记「已最小化到系统托盘」。
+  实测本机 `bin\Debug` 产物目录继承了 Low Mandatory Level，exe 是低完整性进程，
+  `Shell_NotifyIcon` 直接失败——这类情况现在一眼能在日志里看到。
+- 文档：README「托盘图标与退出」补 Windows 11 折叠原理、条目懒创建与轮询、首次最小化提示；
+  故障排查新增两行（只在「^」里看到图标 / 日志说托盘图标不可用）。
+
+## 2026-10-17
+
+**本日四件事：托盘常驻（最小化收托盘、自启不再闪退、关闭行为可选）、上网网卡可手动指定并能真的改系统跃点、
+版本号拆成「数字 + 标签」、修复自启后注销按钮点不动。**
+
+### 托盘：最小化收进系统托盘
+
+- **新增 `AutoLoginNet.App\Infrastructure\TrayIcon.cs`（P/Invoke 自研，不引入 WinForms / 第三方托盘库）**：
+  自建隐藏的顶层原生窗口接收回调消息（`WM_TRAYICON = WM_APP + 1`），用 `Shell_NotifyIconW` 增删改图标；
+  左键单击/双击 → 显示主窗口，右键 → `TrackPopupMenuEx` 弹「显示主窗口」/「退出程序」
+  （选单前 `SetForegroundWindow`、选单后补一条 `WM_NULL`，否则菜单会卡住不消失）；
+  图标从 exe 内嵌的 `Assets\app.ico` 取（`ExtractIconExW`），失败才回退系统默认图标。
+  不用 WinForms 的 `NotifyIcon` 是因为它会把整个 WinForms 拖进交付包，其消息泵也容易与 XAML 冲突。
+- **`MainWindow.xaml.cs`**：`SetWindowSubclass` 拦截 `WM_SYSCOMMAND`/`SC_MINIMIZE`
+  （覆盖标题栏按钮、Alt+Space 菜单、Win+↓），改为 `AppWindow.Hide()`——不用 `WindowState.Minimized`，
+  那样会留在任务栏；子类化没生效时由 `AppWindow.Changed` 感知最小化后兜底隐藏。
+  **托盘图标没加成功时自动退回普通最小化**，避免「窗口藏起来又点不回来」。
+- 已知环境限制：exe 被打上低完整性标签（某些沙箱目录会继承 Low IL）时进程无法与资源管理器通信，
+  `Shell_NotifyIconW` 返回失败，此时退化为普通最小化。
+
+### 自启常驻、关闭行为可选、上网网卡可指定、注销修复
+
+- **开机自启/最小化设置重做**：删掉语义别扭的 `UiSettings.MinimizeAfterLogin`（它管的是「登录成功」而不是
+  「开机自启」），换成两项更明确的设置：`UiSettings.StartMinimizedToTray`（首页「开机自启」卡片）与
+  `UiSettings.CloseToTray`（设置页「外观」卡片）。
+- **`--autostart` 从「静默登录后退出」改为「静默登录后常驻」**：`App.RunAutoStartWithInterface` 登录完
+  不再 `Environment.Exit`，而是按设置用 `new MainWindow(enableTray: true, startHidden)` 常驻，
+  托盘入口始终可用（能注销、能切网卡，不必重启程序）；
+  `AppServices.StartupLoginSucceeded` + `DashboardViewModel.ApplyStartupLoginOutcome` 把自启结果回填成
+  「已自动登录」，`TryClaimStartupAutoLogin()` 拦掉界面上的第二次登录。
+- **关闭主窗口行为可选**（`UiSettings.CloseToTray`，默认 false）：`AppWindow.Closing` 里
+  `args.Cancel = true` 后走 `HideToTray()`；`ExitFromTray` 先置 `_exiting` 避免被自己拦住；
+  托盘没加成功时照常退出。
+- **上网网卡手动指定**：`INetworkAdapterResolver` 增加同步的 `ListAdapters()`（只枚举内存数据，与路由表无关），
+  `WindowsNetworkAdapterResolver` 抽出 `Describe(NetworkInterface)` 复用给 `ResolveByGateway`；
+  新增 `AutoLoginNet.App\Infrastructure\AdapterSwitcher.cs` 统一「列网卡 / 存偏好 / 按名解析」。
+  `UiSettings.NetworkAdapterName` 存**网卡名**而不是索引（索引会随插拔/重启变化）。
+  界面：网络工具页 DNS 卡新增「上网网卡」下拉框，托盘右键菜单新增「上网网卡 ▸」子菜单
+  （`MF_POPUP` + `CheckMenuRadioItem` 单选，第一项「自动选择」）；`--apply-dns` 支持 `--adapter-name`。
+- **修复「自启登录后打开界面无法注销」**：`ConnectivityViewModel.MarkOnline()` 原先在没有快照时直接 return
+  （自启静默登录不经过界面检测，快照一直是 null），`IsOnline` 恒为 false、注销按钮始终禁用。
+  现在无快照时合成一份在线快照；`DashboardViewModel.CanLogout` 放宽为
+  `!IsBusy && (IsOnline || !HasResult)`——状态未知也允许尝试，服务器对未在线会话只返回 NotOnline。
+- 验证：App / Tests 编译 0 警告 0 错误；MSTest 200/200 通过；实机验证自启隐藏进托盘、托盘左键/双击还原、
+  `WM_CLOSE` 收进托盘、托盘菜单「上网网卡 ▸」、网卡下拉列出「以太网 / WLAN / vEthernet」并把
+  `networkAdapterName` 落盘、仪表盘显示「已自动登录」且注销按钮可用。
+
+### 版本号改为 2.0.9.1.dev
+
+- **版本号拆成「数字 + 标签」**（`AutoLoginNet.App\\AutoLoginNet.App.csproj`）：`Version` /
+  `AssemblyVersion` / `FileVersion` 统一为 `2.0.9.1`，另设 `InformationalVersion` 为 `2.0.9.1.dev`，
+  并关掉 `IncludeSourceRevisionInInformationalVersion`。两条硬约束逼出这个拆法：Windows Installer 的
+  `ProductVersion` 只接受 1~4 段纯数字，.NET 的 `Version` 也不接受「4 段 + 文本标签」。
+- **新增 `AutoLoginNet.App\\Infrastructure\\AppVersion.cs`**：从 `AssemblyInformationalVersionAttribute`
+  读完整标签（缺失时回退三段版本、再兜底「未知」），启动日志与设置页都用它：界面显示
+  `2.0.9.1.dev`，安装包登记版本仍是 `2.0.9.1`。
+- **打包脚本新增 `-VersionLabel`**（`Setup\\Export-Installer.ps1`、`Setup\\Build-Installer.ps1`）：
+  不传时从 csproj 解析并校验「版本必须是 1~4 段数字、标签必须以版本开头」，不合规直接抛中文错误；
+  MSI/ZIP 文件名、裁剪报告头、publish 的 `-p:InformationalVersion` 用完整标签，MSI 里的
+  `{{VERSION}}` 继续用纯数字版本。
+- **修复框架依赖包的一个启动崩溃**：`Setup\\PublishPruneRules.ps1` 原先把
+  `Microsoft.Windows.AppLifecycle.Projection.dll` 当「没人引用」删掉，而单实例守卫
+  `AppInstance.FindOrRegisterForKey` 需要它；框架依赖包删掉后启动即 `0xC000027B`
+  （combase 报 0x80070002 找不到文件），全内置包因为投影由包内 `.winmd` 提供而幸免。已移入 `$MustKeep`。
+- **验证脚本改为隔离数据目录**：`Setup\\Verify-PrunedPublish.ps1` 通过新增的 `AUTOLOGIN_DATA_DIR`
+  环境变量（见 `AutoLoginNet.Core\\AppPaths.cs`）把应用指向临时目录，并塞一份 24 条、多分类的种子日志；
+  既验证「日志页真的从磁盘读文件」，也不再污染真实 `%AppData%`（顺带绕开一个陷阱：真实日志上千条时，
+  日志页元素数量会让 UIA 的一次 `FindAll` 超时，验证假失败）。
+- 验证：两形态各出一条命令跑通「发布 → 裁剪 → 实机验证 → MSI/ZIP」——全内置（发布 498 文件 / 159.6 MB，
+  裁剪后 288 文件 / 151.6 MB，MSI 46.70 MB，ZIP 59.79 MB）、框架依赖（裁剪后 26 文件 / 34.7 MB，
+  MSI 7.45 MB，ZIP 9.35 MB）；两个 MSI 的 `ProductVersion` 均为 `2.0.9.1`，文件名与 ZIP 名带
+  `2.0.9.1.dev`；单元测试 200/200 通过。
+
+### 上网网卡真正生效：改系统 IPv4 跃点
+
+- **只改 IPv4 接口跃点**（`AutoLoginNet.Windows\\WindowsAdapterPriorityService.cs`）：首选网卡设 10，
   其余**已连接**网卡设 9000，用 `netsh interface ipv4 set interface <名称> metric=<n>` 落地。
-  选择它的原因是可逆且影响面小：不禁用网卡、不动 IPv6（校园认证与 DNS 查询都走 IPv4）、
-  不碰路由表；断开中的网卡一律不写，避免把「插上就用」的备用网卡锁成低优先级。
-- **先存快照再动系统**（`AutoLoginNet.Core\AdapterPrioritySnapshotStore.cs`，
-  `%AppData%\AutologinForDrcom\adapter-priority.json`）：写不进快照就不改系统；
-  逐条 set 之后**回读两张表校验**，任何一条失败或不生效就倒序回滚（回滚用
-  `CancellationToken.None`，不能被取消打断），回滚完整才删快照，否则保留现场供排查。
-- **回环接口强制排除**：实测本机 `netsh` 把 `Loopback Pseudo-Interface 1` 也标成「已连接」，
+  选择它的原因是可逆且影响面小：不禁用网卡、不动 IPv6（校园认证与 DNS 查询都走 IPv4）、不碰路由表；
+  断开中的网卡一律不写，避免把「插上就用」的备用网卡锁成低优先级。
+- **先存快照再动系统**（`AutoLoginNet.Core\\AdapterPrioritySnapshotStore.cs`，
+  `%AppData%\\AutologinForDrcom\\adapter-priority.json`）：写不进快照就不改系统；逐条 set 之后
+  **回读两张表校验**，任何一条失败或不生效就倒序回滚（`CancellationToken.None`），
+  回滚完整才删快照，否则保留现场供排查。
+- **回环接口强制排除**：实测本机 netsh 把 `Loopback Pseudo-Interface 1` 也标成「已连接」，
   早期实现会给它写 9000。现在按名称含 `Loopback` / `Pseudo-Interface` / 「回环」判定并跳过；
-  若用户直接拿回环当首选，直接拒绝（「是回环接口，不能作为上网网卡」）。
-  快照里仍记录全部网卡的原值，但恢复时值没变就不会被写。
-- **提权沿用「自身 exe 子命令 + 结果文件」**（`AutoLoginNet.App\ElevatedCommands.cs` 新增
+  用户直接拿回环当首选则拒绝（「是回环接口，不能作为上网网卡」）。快照仍记录全部网卡原值，但恢复时值没变就不写。
+- **提权沿用「自身 exe 子命令 + 结果文件」**（`ElevatedCommands.cs` 新增
   `--adapter-priority apply|restore`、`--adapter-name`、`--adapter-priority-result`）：
   未提权时以管理员身份重启自己、把 `AdapterPriorityOperationResult` 写进
   `adapter-priority-result-<32hex>.json` 回传；已提权则直调服务。
-- **界面**（`AutoLoginNet.App\Pages\NetworkPage.xaml` 新增「系统首选网卡」卡片）：
-  「设为系统首选网卡」「恢复系统自动跃点」两个按钮 + 状态文本，都会先弹确认框
-  （讲清改跃点、改变系统选路、不禁用网卡、需要 UAC、可以恢复）；恢复按钮只在存在快照时可用。
-- **验证**：单元测试 **243/243** 通过（新增 17 个计划器用例、24 个服务用例含 netsh 假替身、
-  2 个回环用例）；真机读回 9 个接口的跃点表与 netsh 完全一致；非提权跑一次
-  `set` 被系统拒绝 → 服务完整回滚、不残留快照，行为符合预期。
-
-## 2026-10-17 — 版本号改为 2.0.9.1.dev
-
-**文件名能看出这是开发版，「应用和功能」里仍得是纯数字——版本号从此分成两张面孔。**
-
-- **版本号拆成「数字 + 标签」**（`AutoLoginNet.App\AutoLoginNet.App.csproj`）：`Version` / `AssemblyVersion` / `FileVersion`
-  统一为 `2.0.9.1`，另设 `InformationalVersion` 为 `2.0.9.1.dev`，并关掉
-  `IncludeSourceRevisionInInformationalVersion`（否则源版本号会被追加成 `2.0.9.1.dev+<sha>`）。
-  两条硬约束逼出这个拆法：Windows Installer 的 `ProductVersion` 只接受 1~4 段纯数字，
-  .NET 的 `Version` 也不接受「4 段 + 文本标签」（`-p:Version=2.0.9.1.dev` 在还原阶段就会失败）。
-- **新增 `AutoLoginNet.App\Infrastructure\AppVersion.cs`**：从 `AssemblyInformationalVersionAttribute`
-  读完整标签（缺失时回退三段版本、再兜底「未知」）。启动日志与设置页都用它，
-  于是界面显示 `2.0.9.1.dev`，而安装包登记版本仍是 `2.0.9.1`。
-- **打包脚本新增 `-VersionLabel`**（`Setup\Export-Installer.ps1`、`Setup\Build-Installer.ps1`）：
-  不传时从 csproj 的 `Version` + `InformationalVersion` 解析，并校验「版本必须是 1~4 段数字、
-  标签必须以版本开头」，不合规直接抛中文错误。MSI/ZIP 文件名、裁剪报告头、publish 的
-  `-p:InformationalVersion` 用完整标签，MSI 里的 `{{VERSION}}` 继续用纯数字版本。
-- **修复框架依赖包的一个启动崩溃**：`Setup\PublishPruneRules.ps1` 原先把
-  `Microsoft.Windows.AppLifecycle.Projection.dll` 当成「没人引用」删掉，而单实例守卫用
-  `AppInstance.FindOrRegisterForKey` 需要它；框架依赖包删掉后启动即 `0xC000027B`
-  （combase 报 0x80070002 找不到文件），全内置包因为投影由包内 `.winmd` 提供而幸免。
-  该文件已移入 `$MustKeep`。
-- **验证脚本改为隔离数据目录**：`Setup\Verify-PrunedPublish.ps1` 通过新增的
-  `AUTOLOGIN_DATA_DIR` 环境变量（见 `AutoLoginNet.Core\AppPaths.cs`）把应用指向临时目录，
-  并塞一份 24 条、多分类的种子日志。既验证了「日志页真的从磁盘读文件」，
-  也不再污染真实 `%AppData%`；顺带绕开一个环境陷阱：真实日志积累到上千条时，
-  日志页元素数量会让 UIA 的一次 `FindAll` 超时，验证假失败（本次排查中真实日志已有 818 条）。
-- **验证**：两形态各出一条命令跑通「发布 → 裁剪 → 实机验证 → MSI/ZIP」——
-  全内置（发布 498 文件 / 159.6 MB，裁剪后 288 文件 / 151.6 MB，MSI 46.70 MB，ZIP 59.79 MB）、
-  框架依赖（裁剪后 26 文件 / 34.7 MB，MSI 7.45 MB，ZIP 9.35 MB）；
-  两个 MSI 的 `ProductVersion` 均为 `2.0.9.1`（ARP 只显示数字），文件名与 ZIP 名带 `2.0.9.1.dev`；
-  单元测试 200/200 通过。
-
-## 2026-10-17 — 自启常驻托盘、关闭行为可选、上网网卡可切换、注销修复
-
-**四件事一起改：开机自启不再「闪一下就走」、关闭按钮可以选「收进托盘」、认证与 DNS 用哪张网卡可手动指定、自启登录后注销按钮不再点不动。**
-
-- **开机自启 / 最小化（替代原「登录成功后最小化」）**：删掉 `UiSettings.MinimizeAfterLogin`、`SettingsViewModel.MinimizeAfterLogin`、
-  设置页对应复选框和首页登录成功后的 `MinimizeIfRequested()`——这个开关语义一直别扭（它管的是登录成功、而不是开机自启）。
-  换成两项更明确的设置：`UiSettings.StartMinimizedToTray`（开关在首页「开机自启」卡片里，勾选后自启只在托盘中完成登录）
-  与 `UiSettings.CloseToTray`（设置页「外观」卡片）。
-- **`--autostart` 从「静默登录后退出」改为「静默登录后常驻」**：`App.RunAutoStartWithInterface` 完成静默登录后
-  `MarkStartupLoginCompleted(exitCode == 0)`，再按 `StartMinimizedToTray` 用 `new MainWindow(enableTray: true, startHidden)`
-  常驻；不再 `Environment.Exit`。这样托盘入口始终可用，用户随时能注销或切换上网网卡，不必重启程序重新检测。
-  `AppServices.StartupLoginSucceeded` + `DashboardViewModel.ApplyStartupLoginOutcome` 把自启结果回填成「已自动登录」，
-  同时 `TryClaimStartupAutoLogin()` 拦掉界面上的第二次登录。
-- **关闭主窗口行为可选（`UiSettings.CloseToTray`，默认 false）**：`MainWindow` 订阅 `AppWindow.Closing`，
-  勾选时 `args.Cancel = true` 后走 `HideToTray()`；`ExitFromTray` 先置 `_exiting` 避免被自己拦住。
-  托盘图标没加成功（`IsAvailable == false`）时照常退出——否则关闭按钮会把窗口藏起来又点不回来。
-- **上网网卡手动指定**：`INetworkAdapterResolver` 增加同步的 `ListAdapters()`（枚举内存数据，与路由表无关），
-  `WindowsNetworkAdapterResolver` 抽出 `Describe(NetworkInterface)` 复用给 `ResolveByGateway`；
-  新增 `AutoLoginNet.App\Infrastructure\AdapterSwitcher.cs` 统一「列网卡 / 存偏好 / 按名解析（找不到回退自动并记日志）」。
-  `UiSettings.NetworkAdapterName` 存**网卡名**而不是索引（索引会随插拔/重启变化）。界面：网络工具页 DNS 卡新增「上网网卡」下拉框，
-  托盘右键菜单新增「上网网卡 ▸」子菜单（`MF_POPUP` + `CheckMenuRadioItem` 单选勾选，第一项「自动选择」）。
-  `--apply-dns` 支持 `--adapter-name`：提权子进程按名字解析目标网卡，保证改的就是界面上选中的那张，而不是重新按路由猜一张。
-- **修复「自启登录后打开界面无法注销」**：`ConnectivityViewModel.MarkOnline()` 原先在没有快照时直接 return（自启静默登录不经过界面检测，
-  快照一直是 null），导致 `IsOnline` 恒为 false、注销按钮始终禁用。现在无快照时合成一份在线快照；
-  `DashboardViewModel.CanLogout` 放宽为 `!IsBusy && (IsOnline || !HasResult)`——状态未知也允许尝试，
-  服务器对未在线会话只会返回 NotOnline，无副作用。
-- 验证：App / Tests 工程编译 0 警告 0 错误；MSTest（EnableMSTestRunner 方式跑）200/200 通过；
-  实机验证了自启隐藏进托盘、托盘左键/双击还原、`WM_CLOSE` 收进托盘、托盘菜单「上网网卡 ▸」、网卡下拉列出
-  「以太网 / WLAN / vEthernet」并把 `networkAdapterName` 落盘、仪表盘显示「已自动登录」且注销按钮可用。
+- **界面**（`NetworkPage.xaml` 新增「系统首选网卡」卡片）：「设为系统首选网卡」「恢复系统自动跃点」
+  两个按钮 + 状态文本，都会先弹确认框（讲清改跃点、改变系统选路、不禁用网卡、需要 UAC、可以恢复）；
+  恢复按钮只在存在快照时可用。
+- **验证**：单元测试 **243/243** 通过（新增 17 个计划器用例、24 个服务用例含 netsh 假替身、2 个回环用例）；
+  真机读回 9 个接口的跃点表与 netsh 完全一致；非提权跑一次 `set` 被系统拒绝 → 服务完整回滚、不残留快照。
 
 ---
 
-## 2026-10-17 — 最小化收进系统托盘
+## 2026-10-15
 
-**主窗口「最小化」不再缩进任务栏，而是收进系统托盘。** 这是常驻类工具最省心的用法：登录完成后窗口不必占着
-任务栏也不占用屏幕，需要看日志或改设置时从托盘图标点回来即可。
-
-- **新增 `AutoLoginNet.App\Infrastructure\TrayIcon.cs`（P/Invoke 自研，不引入 WinForms / 第三方托盘库）**：
-  自建一个隐藏的顶层原生窗口接收回调消息（`WM_TRAYICON = WM_APP + 1`），用 `Shell_NotifyIconW` 增删改图标；
-  左键单击 / 双击 → 显示主窗口，右键 → `TrackPopupMenuEx` 弹出「显示主窗口」/「退出程序」（选单前 `SetForegroundWindow`、
-  选单后补一条 `WM_NULL`，否则菜单会卡住不消失）；图标从 exe 内嵌的 `Assets\app.ico` 取（`ExtractIconExW`），失败才回退系统默认图标。
-  不用 WinForms 的 `NotifyIcon` 是因为它会把整个 WinForms 拖进交付包，且其消息泵与 XAML 组件的消息循环容易互相干扰。
-- **`AutoLoginNet.App\MainWindow.xaml.cs`**：`SetWindowSubclass` 拦截 `WM_SYSCOMMAND`/`SC_MINIMIZE`（覆盖标题栏按钮、
-  Alt+Space 菜单、Win+↓），改为 `AppWindow.Hide()`——不用 `WindowState.Minimized`，那样会留在任务栏；
-  子类化没生效时由 `AppWindow.Changed` 感知到最小化后兜底隐藏。**托盘图标没加成功时自动退回普通最小化**，
-  避免出现「窗口藏起来又点不回来」。关闭主窗口仍是退出程序（`Closed` 事件里移除托盘图标）。
-- **开机自启路径（`--autostart` 静默登录）用 `new MainWindow(enableTray: false)`**：那条路径窗口只闪一下，
-  留个托盘图标反而是死图标。（已被同日后续条目取代：自启现在登录后常驻，按「开机自启时最小化到系统托盘」决定只留托盘还是显示窗口。）
-- 设置页「登录成功后最小化窗口」文案改为「登录成功后最小化到系统托盘」，`UiSettings.MinimizeAfterLogin` 注释同步。
-- 已知环境限制：如果 exe 被打上低完整性标签（某些沙箱目录会继承 Low IL），进程无法与资源管理器通信，
-  `Shell_NotifyIconW` 会返回失败且 `GetLastWin32Error()` 为 0——此时按上面的规则退化为普通最小化，功能不受影响。
-
----
-
-## 2026-10-15 — 交付形态收敛为两种（全内置 / 框架依赖）
+### 交付形态收敛为两种（全内置 / 框架依赖）
 
 **「自包含 .NET」版（31.3 MB：只带 .NET、但仍要求目标机装 Windows App Runtime 1.8）停止交付。**
 它省下的 16 MB 换来的是「目标机没装 Windows App Runtime 就闪退」，而全内置版已经能一次拷到任何
@@ -276,14 +230,16 @@ Windows 10 1809+ 机器上跑；留着只在一个中间场景才用得上的包
 
 ---
 
-## v2.0.8 — 2026-10-13
+## 2026-10-13
 
 > 相比 2.0.7 的变化：**同一版本提供三种载荷**（全内置 46.7 MB / 自包含 31.3 MB / 框架依赖 7.4 MB）、
 > **安装向导与许可协议中文化**（协议正文换成新的第三方免责声明，含 MIT 开源条款）、
 > 界面问题修复与一键导出脚本。
 > 升级安装沿用 2.0.7 的做法：自动卸旧版并装回旧版所在目录。
 
-### 安装包：三种交付形态（全内置 / 自包含 / 框架依赖）
+### v2.0.8 — 三种交付形态、安装向导中文化、界面修复与一键导出
+
+#### 安装包：三种交付形态（全内置 / 自包含 / 框架依赖）
 
 > 注：下表是 v2.0.8 发布时的形态。其中「自包含 .NET」一行已于 2026-10-15 停止交付（见文件开头条目），
 > 现在只出「全内置」与「框架依赖」两种。
@@ -312,7 +268,7 @@ Windows 10 1809+ 机器上跑；留着只在一个中间场景才用得上的包
 - 三种形态都**内含** `AutoLoginNet.pri` 与 `App.xbf`；`-fd` 版裁剪后仍有 24.9 MB 是
   `Microsoft.Windows.SDK.NET.dll`（WinRT 托管投影，再省无可省）。
 
-### 打包：接入 Visual Studio / MSBuild（生成即出包）
+#### 打包：接入 Visual Studio / MSBuild（生成即出包）
 
 - **新增 SDK 式 WiX 工程 `Setup\AutoLoginNet.Setup.wixproj`，并加入 `Auto_Login_Net_JXUST.sln`**：
   在 VS 里点「生成解决方案」，或命令行 `dotnet build Setup\AutoLoginNet.Setup.wixproj -c Release`，
@@ -354,7 +310,7 @@ Windows 10 1809+ 机器上跑；留着只在一个中间场景才用得上的包
   默认自包含形态产出 `dist\AutoLoginNet-2.0.8-x64.msi`（32,832,588 B）与
   `dist\AutoLoginNet-2.0.8-portable-x64.zip`（41,404,899 B），13 项中文化断言全过。
 
-### 协议正文换成新版免责声明
+#### 协议正文换成新版免责声明
 
 - **协议来源改为仓库根目录的 `免责声明.txt`**（64 行，用户提供的最新全文），同步一份到
   `Setup\LicenseText.txt` 供打包脚本使用；相比旧正文多了「开源许可与 MIT 协议」一节，
@@ -365,7 +321,7 @@ Windows 10 1809+ 机器上跑；留着只在一个中间场景才用得上的包
   `Setup\New-LicenseRtf.ps1` 也加了同规则的自检，任何一行没进 RTF 就直接抛错。
   修正后：**45 行正文逐行命中，缺失 0 行**，RTF 长度 18343。
 
-### 体积：改为框架依赖发布（安装包缩小到约 1/6）
+#### 体积：改为框架依赖发布（安装包缩小到约 1/6）
 
 自包含发布把 .NET 运行时与 Windows App Runtime 一起打进了包，这是体积的大头：
 解包 151.58 MB 里，真正属于程序自己的只有约 **2.2 MB**，其余是运行时（.NET 约 63 MB）、
@@ -392,7 +348,7 @@ WinUI 原生组件（约 50 MB）和 WinRT 投影（约 33 MB）。
 - `Setup\PublishPruneRules.ps1` 的裁剪规则保留，但框架依赖下命中的条目会少很多——
   大部分被裁掉的文件本来就属于运行时。
 
-### 安装程序中文化
+#### 安装程序中文化
 
 - **安装向导全中文**：`Setup\WixUI_zh-CN.wxl` 覆盖 WiX 内置的全部对话框文案
   （欢迎、许可协议、目标文件夹、就绪、进度、完成、错误提示与各按钮），
@@ -411,7 +367,7 @@ WinUI 原生组件（约 50 MB）和 WinRT 投影（约 33 MB）。
   `ProductLanguage=2052`），任何一项不过就中止打包并列出失败项。
   之前只靠「编译成功」判断，很容易在忘记 `-loc` 时悄悄退回英文安装界面。
 
-### 修复
+#### 修复
 
 | 问题 | 根因 | 修复 |
 | --- | --- | --- |
@@ -425,7 +381,7 @@ WinUI 原生组件（约 50 MB）和 WinRT 投影（约 33 MB）。
 | 1.x 的数据与桌面快捷方式在新版上失效 | 数据目录、凭据文件名、启动参数都变了 | 首次运行时迁移：旧凭据文件转换到新格式，旧版 `--silent` 参数作为 `--autostart` 的别名继续可用 |
 | 历史遗留兼容代码无人清理 | 换架构时留下的死分支 | 删除旧 WPF / 控制台路径与已无引用的兼容分支，详见下方「打包」小节 |
 
-### 打包
+#### 打包
 
 - **新增一键导出脚本 `Setup\Export-Installer.ps1`**：检查并（必要时）编译原生自定义动作 →
   `dotnet publish` → 裁剪 → 运行可用性验证 → 生成 MSI 与免安装 ZIP → 打印大小与 SHA256，
@@ -453,11 +409,9 @@ WinUI 原生组件（约 50 MB）和 WinRT 投影（约 33 MB）。
   四个页面可切换且页面含预期文案、日志页真的从磁盘读到多类记录、可触发网络检测、全程无崩溃、
   事件日志无新增应用错误。
 
----
+### 安装包：就地升级覆盖、原生自定义动作与体积精简
 
-## 2026-10-13 — 安装包：就地升级覆盖、原生自定义动作与体积精简
-
-### 修复
+#### 修复
 
 - **装新版会另起一个目录，旧目录里的东西留在原地**：以前无论旧版装在哪里，升级都装到
   `C:\Program Files\AutoLoginNet`（默认目录），旧目录不会被覆盖，用户看到的是「两份安装」。
@@ -494,14 +448,14 @@ WinUI 原生组件（约 50 MB）和 WinRT 投影（约 33 MB）。
   `WindowsInstaller` 互操作程序集，托管自定义动作在打包环境里无法编译；
   原生 DLL 只依赖 `msi.dll`。
 
-### 打包：原生自定义动作
+#### 打包：原生自定义动作
 
 - 新增 `Setup\CustomActions.Native\UpgradeLocation.cpp` 与 `Setup\Build-NativeCustomActions.ps1`，
   MSI 打包流程会自动编译并嵌入该动作。
 - 新增 `Setup\Test-NativeDetection.ps1`：在普通权限下直接加载**编译产物**跑自检，
   验证的就是即将交付的那份代码（早期夹具另写了一份等价逻辑，结果夹具全绿而功能从未生效）。
 
-### 打包：体积再精简
+#### 打包：体积再精简
 
 - **安装包体积精简约 9%**：MSI 52.8 MB → **48.3 MB**，免安装包 69.6 MB → **63.5 MB**
   （解包后 174.3 MB → 159.6 MB，498 个文件）。移除的是发布包里永远不会被加载的文件：
@@ -517,7 +471,7 @@ WinUI 原生组件（约 50 MB）和 WinRT 投影（约 33 MB）。
   **一个 76 MB 但会崩的包，不如一个 160 MB 能用的包**，因此这里只做文件级删除，不碰 IL。
 - **`WinUIEdit.dll` 必须保留**（3.3 MB）：实测删掉后程序无法启动，是 WinUI 输入栈的硬依赖。
 
-### 修复（打包流程）
+#### 修复（打包流程）
 
 - **安装包版本落后于应用**：应用已到 v2.0.7，而 `Build-Installer.ps1` 里另写着默认版本 `2.0.5`，
   导致打出来的安装包仍是没有自动登录、没有重试、跳过检测不被记忆的旧版本。
