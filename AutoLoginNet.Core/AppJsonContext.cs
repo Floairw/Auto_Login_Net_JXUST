@@ -15,6 +15,8 @@ namespace AutoLoginNet;
 [JsonSerializable(typeof(Services.AutoStartMarker))]
 [JsonSerializable(typeof(DnsOperationResult))]
 [JsonSerializable(typeof(Hosts.HostsOperationResult))]
+[JsonSerializable(typeof(Network.AdapterPrioritySnapshot))]
+[JsonSerializable(typeof(Network.AdapterPriorityOperationResult))]
 public sealed partial class AppJsonContext : JsonSerializerContext
 {
 }
