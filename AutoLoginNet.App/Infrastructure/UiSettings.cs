@@ -23,7 +23,7 @@ public sealed class UiSettings
     /// <summary>登录时跳过网络环境检测，直接提交认证。</summary>
     public bool SkipNetworkCheck { get; set; }
 
-    /// <summary>登录成功后自动最小化窗口。</summary>
+    /// <summary>登录成功后自动最小化到系统托盘。</summary>
     public bool MinimizeAfterLogin { get; set; }
 }
 

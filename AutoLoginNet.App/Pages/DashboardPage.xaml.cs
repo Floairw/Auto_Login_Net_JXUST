@@ -164,7 +164,7 @@ public sealed partial class DashboardPage : Page
     }
 
     /// <summary>
-    /// 登录成功后按「界面设置 → 登录成功后最小化窗口」把主窗口最小化。
+    /// 登录成功后按「界面设置 → 登录成功后最小化到系统托盘」把主窗口收进托盘。
     /// <para>
     /// 只处理界面里的登录（手动点击与「启动时自动登录」）；
     /// <c>--autostart</c> 静默登录走 <see cref="StartupRouter.RunSilentLogin"/>，

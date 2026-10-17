@@ -127,7 +127,8 @@ public partial class App : Application
             exitCode = 3;
         }
 
-        MainWindow = new MainWindow();
+        // 自启路径的窗口只闪一下就让位给主进程，不建托盘图标（否则托盘里会留一个点不动的图标）
+        MainWindow = new MainWindow(enableTray: false);
         MainWindow.Activate();
         MainWindow.BringToForeground();
 

@@ -13,7 +13,7 @@ namespace AutoLoginNet.App.Infrastructure;
 /// 重定向超时等）都降级为返回 true 放行，宁可多开一个进程，也不让用户点了图标打不开。
 /// </para>
 /// <para>
-/// 只做单实例，不涉及托盘图标：最小化到任务栏后仍可从任务栏恢复。
+/// 只做单实例；窗口可能正藏在托盘里，激活时由 <c>MainWindow.BringToForeground</c> 负责先还原再置前。
 /// </para>
 /// </summary>
 public static class SingleInstanceGuard
