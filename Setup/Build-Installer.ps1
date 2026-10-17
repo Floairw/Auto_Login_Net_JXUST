@@ -13,7 +13,13 @@
         安装包约 47 MB，产物文件名带 -was-fd 后缀。不确定目标机装过什么就用这个。
       - -FrameworkDependent：安装包约 7 MB，目标机必须先装 .NET 10 与 Windows App Runtime 1.8，
         产物文件名带 -fd 后缀。
-      两者 ProductCode/UpgradeCode 相同，属同一产品的不同分发方式，不能同时安装；
+      两者是**同一个产品、两种载荷**，有意设计成不能同时安装（细节见下方参数区注释）：
+        - UpgradeCode 相同：它标识「产品线 / 升级路径」，由固定种子生成，与形态无关，
+          所以两种形态落进同一条升级链；
+        - ProductCode 由 WiX 每次编译自动生成（模板里不写死），因此不同形态、甚至同一形态
+          每次重编出来的 ProductCode 都不一样 —— ProductCode 标识的是「某一次构建的某个包」；
+        - 「同一个 UpgradeCode + 相同 Version + AllowSameVersionUpgrades」使装了其中一种再装
+          另一种时被判定为**同版本升级**：先卸载旧的再装新的（原地覆盖），而不是并排两份。
       文件名后缀不同，可同时放在 dist 里互不覆盖。
 
     第三种「自包含 .NET」（只含 .NET、仍需系统预装 Windows App Runtime，约 31 MB）已停止交付：
@@ -37,7 +43,19 @@ param(
     # 两种交付形态共用同一份产品定义，只靠发布载荷与文件名后缀区分：
     #   默认（不加开关）= 全内置：.NET 与 Windows App Runtime 都进包，目标机零运行时依赖，约 47 MB；
     #   -FrameworkDependent = 框架依赖：需预装 .NET 10 + Windows App Runtime 1.8，约 7 MB。
-    # 两者共用同一 ProductCode/UpgradeCode，属同一产品的不同分发方式，不能同时装。
+    # 为什么两种形态必须「二选一、不能同时安装」（有意设计，不是缺陷）：
+    #   1) UpgradeCode 是「产品线」的身份，由 Build-Installer 用固定种子 Get-StableGuid 生成，
+    #      与开关无关 —— 两种形态、以及以后每个版本，都落在同一条升级链上；
+    #   2) 模板里**不写 ProductCode**，WiX 每次编译自动生成一个新的：实测 dist 里
+    #      -fd 与 -was-fd 两份 MSI 的 ProductCode 不同，本机已装的旧 2.0.8 又是另一个。
+    #      ProductCode 标识「某一次构建出的某个产品包」，本来就不该跨构建复用；
+    #   3) 相同 UpgradeCode + 相同 Version + Product.wxs 的 AllowSameVersionUpgrades="yes"，
+    #      让「已装其中一种、再装另一种」被 Windows Installer 判为**同版本升级**：卸载旧包、
+    #      装上新包，ARP 仍只有一条记录，程序由原生自定义动作装回旧版原目录。
+    #   4) 反过来，若给两种形态不同的 UpgradeCode（或不同产品名），它们就成了两个独立产品：
+    #      ARP 两条记录、两套开始菜单与开机自启互相覆盖、覆盖升级失效，而「装新版自动找到
+    #      旧版装在哪并原地覆盖」正是本项目的核心需求之一。所以「不能同时装」是必须保留的行为。
+    #   用户要换形态：先卸载已安装的那个，再装另一个即可（.zip 免安装版不写注册表，不受此限）。
     [switch]$FrameworkDependent,
     # 全内置本身就是默认形态；保留这个开关只为兼容既有命令行与 Setup\AutoLoginNet.Setup.wixproj 里的显式写法。
     [switch]$WindowsAppSDKSelfContained,
