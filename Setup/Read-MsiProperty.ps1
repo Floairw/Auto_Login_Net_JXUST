@@ -18,7 +18,10 @@ function Get-MsiProperty($installer, $installerType, [string]$path, [string]$nam
     $sql = 'SELECT `Value` FROM `Property` WHERE `Property`=''' + $name + ''''
     $view = $dbType.InvokeMember('OpenView', 'InvokeMethod', $null, $db, @($sql))
     $viewType = $view.GetType()
-    $viewType.InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
+    # 注意：[void] 不能省。Execute 返回 null，而 PowerShell 会把裸表达式产生的
+    # $null 也送进管道，让本函数的返回值变成「[null, 属性值]」两个元素，
+    # 调用方 -f 格式化出来就是 System.Object[]（本文件早先就踩过这个坑）。
+    [void]$viewType.InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
     $rec = $viewType.InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
     if ($null -eq $rec) { return $null }
     return $rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, @(1))
