@@ -38,6 +38,10 @@ param(
     [string]$Configuration = 'Release',
     [string]$RuntimeIdentifier = 'win-x64',
     [string]$Version,
+    # 产物文件名/日志用的完整版本标签（可带 .dev 之类后缀，如 2.0.9.1.dev）。
+    # 省略时读 csproj 的 <InformationalVersion>：MSI 的 ProductVersion 只认纯数字，
+    # 带标签的版本进不去安装包，所以文件名用标签、{{VERSION}} 用 -Version 的数字部分。
+    [string]$VersionLabel,
     [string]$Manufacturer = 'AutoLoginNet',
     [string]$ProductName = '校园网认证客户端',
     # 两种交付形态共用同一份产品定义，只靠发布载荷与文件名后缀区分：
@@ -85,21 +89,34 @@ $flavorLabel = if ($FrameworkDependent) { '框架依赖（需预装运行时）'
 
 # 版本号以 csproj 为唯一来源。此前脚本里另写了一份 '2.0.5' 默认值，结果应用已到 v2.0.7
 # 而打出来的安装包仍是 2.0.5（安装包落后了两次功能改动）。未显式传 -Version 时一律读 csproj。
+# 两个值刻意分开（原因见 AutoLoginNet.App.csproj 的版本注释）：
+#   $Version      —— 纯数字，写进 MSI 的 ProductVersion（Windows Installer 只认 1~4 段数字）；
+#   $VersionLabel —— 带标签的完整版本，只用于产物文件名与日志。
 if (-not $Version) {
     $versionXml = [xml](Get-Content $projectPath -Raw)
     $Version = $versionXml.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
     if (-not $Version) { throw "无法从 $projectPath 读取 <Version>" }
+    if (-not $VersionLabel) {
+        $VersionLabel = $versionXml.Project.PropertyGroup.InformationalVersion | Where-Object { $_ } | Select-Object -First 1
+    }
 }
-Write-Host "==> 打包版本：$Version（来源：AutoLoginNet.App.csproj）" -ForegroundColor Cyan
+if (-not $VersionLabel) { $VersionLabel = $Version }
+if ($Version -notmatch '^\d+(\.\d+){0,3}$') {
+    throw "MSI 的 ProductVersion 必须 1~4 段纯数字，-Version=$Version 不合法。带标签的版本请交给 -VersionLabel，例如 -Version 2.0.9.1 -VersionLabel 2.0.9.1.dev"
+}
+if (-not $VersionLabel.StartsWith($Version, [StringComparison]::Ordinal)) {
+    throw "版本标签 $VersionLabel 必须以数字版本 $Version 开头：MSI 只能记录纯数字版本，标签只用于产物文件名与界面显示。"
+}
+Write-Host "==> 打包版本：$VersionLabel（MSI 内部 ProductVersion：$Version；来源：AutoLoginNet.App.csproj）" -ForegroundColor Cyan
 
 $publishDir = Join-Path $repoRoot 'dist\AutoLoginNet'
 $setupDir = $PSScriptRoot
 $objDir = Join-Path $setupDir 'obj'
 $outDir = Join-Path $repoRoot 'dist'
-$msiPath = Join-Path $outDir "AutoLoginNet-$Version$flavorSuffix-x64.msi"
+$msiPath = Join-Path $outDir "AutoLoginNet-$VersionLabel$flavorSuffix-x64.msi"
 # 用架构短名（x64）而不是完整 RID（win-x64），与 MSI 的命名保持一致
 $archLabel = $RuntimeIdentifier -replace '^win-', ''
-$zipPath = Join-Path $outDir "AutoLoginNet-$Version-portable$flavorSuffix-$archLabel.zip"
+$zipPath = Join-Path $outDir "AutoLoginNet-$VersionLabel-portable$flavorSuffix-$archLabel.zip"
 
 function Write-Step([string]$text) { Write-Host "==> $text" -ForegroundColor Cyan }
 
@@ -221,7 +238,7 @@ if (-not $SkipPublish) {
         $extraArgs += '-p:WindowsAppSDKSelfContained=true'
     }
     dotnet publish $projectPath -c $Configuration -r $RuntimeIdentifier --self-contained $selfContainedArg `
-        -p:Version=$Version @extraArgs -o $publishDir | Out-Host
+        -p:Version=$Version -p:InformationalVersion=$VersionLabel @extraArgs -o $publishDir | Out-Host
 
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish 失败（退出码 $LASTEXITCODE）" }
 }

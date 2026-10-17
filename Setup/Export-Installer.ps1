@@ -25,7 +25,13 @@
     先裁剪到 dist\AutoLoginNet，MSI/ZIP 都从裁剪后的目录出。
 
 .PARAMETER Version
-    版本号。省略时从 AutoLoginNet.App\AutoLoginNet.App.csproj 读取 <Version>。
+    MSI 的数字版本（1~4 段纯数字，如 2.0.9.1）。省略时从
+    AutoLoginNet.App\AutoLoginNet.App.csproj 读取 <Version>。
+
+.PARAMETER VersionLabel
+    产物文件名与日志用的完整版本标签，可以带后缀（如 2.0.9.1.dev）。省略时读 csproj 的
+    <InformationalVersion>；都没有就取 -Version。必须以 -Version 的数字部分开头——
+    MSI 的 ProductVersion 只认纯数字，标签进不去安装包，ARP 里只会显示数字版本。
 
 .PARAMETER FrameworkDependent
     产出框架依赖版（不含运行时，约 7 MB，文件名带 -fd 后缀）。不加任何形态开关时产出的是全内置版。
@@ -81,6 +87,8 @@
 [CmdletBinding()]
 param(
     [string]$Version,
+    # 产物文件名/日志用的完整版本标签（可带 .dev 之类后缀）；见上方 .PARAMETER VersionLabel
+    [string]$VersionLabel,
     [switch]$FrameworkDependent,
     [switch]$SelfContained,
     [switch]$WindowsAppSDKSelfContained,
@@ -122,14 +130,30 @@ $pwshExe = Join-Path $PSHOME 'pwsh.exe'
 if (-not (Test-Path -LiteralPath $pwshExe)) { $pwshExe = (Get-Process -Id $PID).Path }
 
 # ---------------------------------------------------------------- 版本号
+# 刻意拆成两个值（原因见 AutoLoginNet.App.csproj 的版本注释）：
+#   $Version      —— 纯数字，写进 MSI 的 ProductVersion（Windows Installer 只认 1~4 段数字）；
+#   $VersionLabel —— 带标签的完整版本（如 2.0.9.1.dev），只用于产物文件名、日志与裁剪报告。
 if (-not $Version) {
     [xml]$csproj = Get-Content -LiteralPath $projectPath -Raw
     $Version = ($csproj.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1)
     if (-not $Version) { throw "无法从 $projectPath 读取 <Version>" }
+    if (-not $VersionLabel) {
+        $VersionLabel = ($csproj.Project.PropertyGroup.InformationalVersion | Where-Object { $_ } | Select-Object -First 1)
+    }
     Write-Host "打包版本：$Version（来源：AutoLoginNet.App.csproj）"
 }
 else {
     Write-Host "打包版本：$Version（命令行指定）"
+}
+if (-not $VersionLabel) { $VersionLabel = $Version }
+if ($Version -notmatch '^\d+(\.\d+){0,3}$') {
+    throw "MSI 的 ProductVersion 必须 1~4 段纯数字，-Version=$Version 不合法。带标签的版本请交给 -VersionLabel，例如 -Version 2.0.9.1 -VersionLabel 2.0.9.1.dev"
+}
+if (-not $VersionLabel.StartsWith($Version, [StringComparison]::Ordinal)) {
+    throw "版本标签 $VersionLabel 必须以数字版本 $Version 开头：MSI 只能记录纯数字版本，标签只用于产物文件名与界面显示。"
+}
+if ($VersionLabel -ne $Version) {
+    Write-Host "产物版本标签：$VersionLabel（MSI 内部版本仍是 $Version）"
 }
 
 if ($SelfContained) {
@@ -151,8 +175,8 @@ $selfContainedArg = if ($FrameworkDependent) { 'false' } else { 'true' }
 $flavorLabel = if ($FrameworkDependent) { '框架依赖（需预装运行时）' } else { '全内置（含 .NET 与 Windows App Runtime）' }
 Write-Host "交付形态：$flavorLabel"
 
-$msiPath = Join-Path $distDir "AutoLoginNet-$Version$flavorSuffix-x64.msi"
-$zipPath = Join-Path $distDir "AutoLoginNet-$Version-portable$flavorSuffix-x64.zip"
+$msiPath = Join-Path $distDir "AutoLoginNet-$VersionLabel$flavorSuffix-x64.msi"
+$zipPath = Join-Path $distDir "AutoLoginNet-$VersionLabel-portable$flavorSuffix-x64.zip"
 
 # -PrepareOnly -SkipPublish：载荷已发布并裁剪好，只重新生成 WiX 源文件（.wixproj 增量构建走这条，
 # 免得每次 IDE 生成都重新发布上百 MB）。这条路径连原生自定义动作检查都不做——生成 Product.wxs 时
@@ -162,17 +186,18 @@ if ($PrepareOnly -and $SkipPublish) {
         throw "找不到发布目录 $publishDir —— -SkipPublish 要求载荷已就绪；请先跑一次不带 -SkipPublish 的 -PrepareOnly。"
     }
     Write-Step '生成 WiX 源文件（复用现有发布目录，编译交给 MSBuild）'
-    $genArgs = @{ Version = $Version; SkipPublish = $true; GenerateOnly = $true }
+    $genArgs = @{ Version = $Version; VersionLabel = $VersionLabel; SkipPublish = $true; GenerateOnly = $true }
     if ($FrameworkDependent) { $genArgs['FrameworkDependent'] = $true }
     if ($WindowsAppSDKSelfContained) { $genArgs['WindowsAppSDKSelfContained'] = $true }
     & $pwshExe -NoProfile -File (Join-Path $PSScriptRoot 'Build-Installer.ps1') @genArgs
     if ($LASTEXITCODE -ne 0) { throw "生成 WiX 源文件失败，退出码 $LASTEXITCODE" }
     return [PSCustomObject]@{
-        Version  = $Version
-        Products = @()
-        Pruned   = $true
-        Runtimes = @()
-        Prepared = $true
+        Version      = $Version
+        VersionLabel = $VersionLabel
+        Products     = @()
+        Pruned       = $true
+        Runtimes     = @()
+        Prepared     = $true
     }
 }
 
@@ -208,6 +233,8 @@ $publishArgs = @(
     #   false -> 框架依赖（只出应用，目标机需预装 .NET 10 + Windows App Runtime 1.8）
     '--self-contained', $selfContainedArg,
     "-p:Version=$Version",
+    # 带标签的完整版本进 InfoVersion（界面与启动日志显示它）；$Version 只负责 MSI 的纯数字版本
+    "-p:InformationalVersion=$VersionLabel",
     '-o', $publishDir,
     '--nologo'
 )
@@ -237,9 +264,9 @@ else {
     $afterBytes = ($after | Measure-Object -Property Length -Sum).Sum
     Write-Host "裁剪后：$($after.Count) 个文件 / $([math]::Round($afterBytes / 1MB, 2)) MB"
 
-    $reportPath = Join-Path $distDir "prune-report-$Version$flavorSuffix.txt"
+    $reportPath = Join-Path $distDir "prune-report-$VersionLabel$flavorSuffix.txt"
     $report = @(
-        "# 裁剪报告 版本 $Version  生成时间 $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+        "# 裁剪报告 版本 $VersionLabel  生成时间 $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
         "# 裁剪前：$($publishedFiles.Count) 个文件 / $([math]::Round($publishedBytes / 1MB, 2)) MB"
         "# 裁剪后：$($after.Count) 个文件 / $([math]::Round($afterBytes / 1MB, 2)) MB"
         ''
@@ -266,7 +293,7 @@ else {
 
 # ---------------------------------------------------------------- 4. 生成 MSI + ZIP（或只生成源文件）
 $installer = Join-Path $PSScriptRoot 'Build-Installer.ps1'
-$installerArgs = @{ Version = $Version; SkipPublish = $true }
+$installerArgs = @{ Version = $Version; VersionLabel = $VersionLabel; SkipPublish = $true }
 if ($FrameworkDependent) { $installerArgs['FrameworkDependent'] = $true }
 if ($WindowsAppSDKSelfContained) { $installerArgs['WindowsAppSDKSelfContained'] = $true }
 
@@ -278,11 +305,12 @@ if ($PrepareOnly) {
     & $pwshExe -NoProfile -File $installer @installerArgs
     if ($LASTEXITCODE -ne 0) { throw "生成 WiX 源文件失败，退出码 $LASTEXITCODE" }
     return [PSCustomObject]@{
-        Version  = $Version
-        Products = @()
-        Pruned   = (-not $SkipPrune)
-        Runtimes = @()
-        Prepared = $true
+        Version      = $Version
+        VersionLabel = $VersionLabel
+        Products     = @()
+        Pruned       = (-not $SkipPrune)
+        Runtimes     = @()
+        Prepared     = $true
     }
 }
 
@@ -360,8 +388,9 @@ Write-Host ''
 Write-Host '导出完成。' -ForegroundColor Green
 
 [PSCustomObject]@{
-    Version  = $Version
-    Products = $results
-    Pruned   = (-not $SkipPrune)
-    Runtimes = $runtimeFiles
+    Version      = $Version
+    VersionLabel = $VersionLabel
+    Products     = $results
+    Pruned       = (-not $SkipPrune)
+    Runtimes     = $runtimeFiles
 }
