@@ -140,44 +140,95 @@ public static class ShellHelper
         }
     }
 
-    /// <summary>弹出提示对话框。</summary>
+    /// <summary>
+    /// 同一时刻只允许一个 <see cref="ContentDialog"/>。
+    /// <para>
+    /// WinUI 3 的硬限制是「只能有一个 ContentDialog 处于打开状态」，第二个
+    /// <c>ShowAsync</c> 会抛 <c>COMException 0x80000019</c>（「某个异步操作没有正常启动」）。
+    /// 双击按钮、连按回车，或在旧对话框还没真正显示时又点一次，都会撞上它。
+    /// 用一个信号量把「打开对话框」串行化：拿不到就直接当作用户取消，绝不把异常抛给调用方。
+    /// </para>
+    /// </summary>
+    private static readonly SemaphoreSlim DialogGate = new(1, 1);
+
+    /// <summary>弹出提示对话框；已有对话框打开时静默跳过（提示不是必需操作，不值得弹第二个）。</summary>
     public static async Task ShowMessageAsync(XamlRoot? xamlRoot, string title, string message)
     {
-        if (xamlRoot is null)
+        if (xamlRoot is null || !DialogGate.Wait(0))
         {
             return;
         }
 
-        var dialog = new ContentDialog
+        try
         {
-            XamlRoot = xamlRoot,
-            Title = title,
-            Content = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
-            CloseButtonText = "知道了",
-        };
+            var dialog = new ContentDialog
+            {
+                XamlRoot = xamlRoot,
+                Title = title,
+                Content = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
+                CloseButtonText = "知道了",
+            };
 
-        await dialog.ShowAsync();
+            await dialog.ShowAsync();
+        }
+        catch (Exception ex)
+        {
+            LogDialogFailure(ex);
+        }
+        finally
+        {
+            DialogGate.Release();
+        }
     }
 
-    /// <summary>弹出确认对话框。</summary>
+    /// <summary>
+    /// 弹出确认对话框。
+    /// 已有对话框打开或对话框自身打开失败时返回 false（按「用户没确认」处理），
+    /// 让误触/连点变成「什么也没发生」，而不是让程序崩在按钮点击里。
+    /// </summary>
     public static async Task<bool> ConfirmAsync(XamlRoot? xamlRoot, string title, string message, string confirmText = "确定")
     {
-        if (xamlRoot is null)
+        if (xamlRoot is null || !DialogGate.Wait(0))
         {
             return false;
         }
 
-        var dialog = new ContentDialog
+        try
         {
-            XamlRoot = xamlRoot,
-            Title = title,
-            Content = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
-            PrimaryButtonText = confirmText,
-            CloseButtonText = "取消",
-            DefaultButton = ContentDialogButton.Primary,
-        };
+            var dialog = new ContentDialog
+            {
+                XamlRoot = xamlRoot,
+                Title = title,
+                Content = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
+                PrimaryButtonText = confirmText,
+                CloseButtonText = "取消",
+                DefaultButton = ContentDialogButton.Primary,
+            };
 
-        return await dialog.ShowAsync() == ContentDialogResult.Primary;
+            return await dialog.ShowAsync() == ContentDialogResult.Primary;
+        }
+        catch (Exception ex)
+        {
+            LogDialogFailure(ex);
+            return false;
+        }
+        finally
+        {
+            DialogGate.Release();
+        }
+    }
+
+    /// <summary>对话框打开失败只记日志：不能因为「弹窗弹不出来」而让整个操作抛异常。</summary>
+    private static void LogDialogFailure(Exception ex)
+    {
+        try
+        {
+            App.Services?.Log.Error($"对话框打开失败：{ex.Message}", "界面");
+        }
+        catch
+        {
+            // 日志还没就绪（极早期启动）时忽略
+        }
     }
 
 }

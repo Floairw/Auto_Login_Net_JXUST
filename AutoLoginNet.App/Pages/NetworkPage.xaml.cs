@@ -116,54 +116,69 @@ public sealed partial class NetworkPage : Page
     /// </summary>
     private async void SetSystemPreferred_Click(object sender, RoutedEventArgs e)
     {
-        bool confirmed = await ShellHelper.ConfirmAsync(
-            XamlRoot,
-            "设为系统首选网卡",
-            "将修改系统 IPv4 接口跃点：选定的上网网卡改为 10，其余已连接网卡改为 9000，"
-            + "让系统优先从这张网卡上网。\n\n"
-            + "这会改变系统选路（可能影响其它网卡上的网络），但不会禁用任何网卡。\n"
-            + "需要管理员权限，点击「确定」后会弹出 UAC 授权窗口；之后可随时点「恢复系统自动跃点」还原。",
-            "确定并提权");
-
-        if (!confirmed)
-        {
-            return;
-        }
-
-        App.MainWindow?.SetBusy(true);
         try
         {
-            await ViewModel.SetSystemPreferredAsync();
+            bool confirmed = await ShellHelper.ConfirmAsync(
+                XamlRoot,
+                "设为系统首选网卡",
+                "将修改系统 IPv4 接口跃点：选定的上网网卡改为 10，其余已连接网卡改为 9000，"
+                + "让系统优先从这张网卡上网。\n\n"
+                + "这会改变系统选路（可能影响其它网卡上的网络），但不会禁用任何网卡。\n"
+                + "需要管理员权限，点击「确定」后会弹出 UAC 授权窗口；之后可随时点「恢复系统自动跃点」还原。",
+                "确定并提权");
+
+            if (!confirmed)
+            {
+                return;
+            }
+
+            App.MainWindow?.SetBusy(true);
+            try
+            {
+                await ViewModel.SetSystemPreferredAsync();
+            }
+            finally
+            {
+                App.MainWindow?.SetBusy(false);
+            }
         }
-        finally
+        catch (Exception ex)
         {
-            App.MainWindow?.SetBusy(false);
+            // async void 里漏出来的异常会直接进未处理异常，把按钮点击变成崩溃；这里兜底记日志
+            App.Services?.Log.Error($"设置系统首选网卡时出错：{ex}", "网络");
         }
     }
 
     /// <summary>按上次应用前保存的快照恢复原跃点。</summary>
     private async void RestoreAdapterPriority_Click(object sender, RoutedEventArgs e)
     {
-        bool confirmed = await ShellHelper.ConfirmAsync(
-            XamlRoot,
-            "恢复系统自动跃点",
-            "将按上次应用前保存的快照，把各网卡的 IPv4 接口跃点恢复成原值，系统重新按默认跃点自动选路。\n\n"
-            + "需要管理员权限，点击「确定」后会弹出 UAC 授权窗口。是否继续？",
-            "确定并提权");
-
-        if (!confirmed)
-        {
-            return;
-        }
-
-        App.MainWindow?.SetBusy(true);
         try
         {
-            await ViewModel.RestoreAdapterPriorityAsync();
+            bool confirmed = await ShellHelper.ConfirmAsync(
+                XamlRoot,
+                "恢复系统自动跃点",
+                "将按上次应用前保存的快照，把各网卡的 IPv4 接口跃点恢复成原值，系统重新按默认跃点自动选路。\n\n"
+                + "需要管理员权限，点击「确定」后会弹出 UAC 授权窗口。是否继续？",
+                "确定并提权");
+
+            if (!confirmed)
+            {
+                return;
+            }
+
+            App.MainWindow?.SetBusy(true);
+            try
+            {
+                await ViewModel.RestoreAdapterPriorityAsync();
+            }
+            finally
+            {
+                App.MainWindow?.SetBusy(false);
+            }
         }
-        finally
+        catch (Exception ex)
         {
-            App.MainWindow?.SetBusy(false);
+            App.Services?.Log.Error($"恢复系统自动跃点时出错：{ex}", "网络");
         }
     }
 
