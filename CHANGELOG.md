@@ -8,8 +8,26 @@ v2.0 是一次彻底重构，v1.x 的历史记录保留在文件末尾。
 
 ## 2026-10-18
 
-**本日三件事：让「上网网卡」真正决定系统选路（连默认路由跃点一起改，并修好中文系统的解析）、
-DNS 优选只测只改指定网卡、Windows 11 下把托盘图标放到任务栏上。**
+**本日四件事：让「上网网卡」真正决定系统选路（连默认路由跃点一起改，并修好中文系统的解析）、
+DNS 优选只测只改指定网卡、Windows 11 下把托盘图标放到任务栏上、安装包只出 MSI 并把版本升到 2.0.9.5.dev。**
+
+### 安装包只出 MSI：去掉便携 ZIP，框架依赖版不再带 -fd 后缀
+
+- **不再产便携版**：`Setup\Build-Installer.ps1` 删掉 `New-PortableZip` 函数、两处调用、产物汇总里的
+  「免安装包」行与 `$zipPath`/`$archLabel` 变量；`Setup\Export-Installer.ps1` 删掉 `$zipPath`、
+  桌面复制循环里对 ZIP 的处理与说明文字。**dist 里从此只有 MSI**——便携包与 MSI 同源，
+  维护两份产物没带来价值，而且它不写注册表、容易和安装版共用同一份 `%AppData%` 数据目录。
+  仓库里没有覆盖打包逻辑的单元测试（测试只覆盖应用/服务代码），相关改动只在脚本与文档里。
+- **框架依赖包去掉 `-fd` 后缀**（用户要求）：产物名从 `AutoLoginNet-<版本>-fd-x64.msi` 改为
+  `AutoLoginNet-<版本>-x64.msi`，全内置仍是 `…-was-fd-x64.msi`，两版仍能同时躺在 dist 里互不覆盖。
+  `Setup\Build-Installer.ps1` 与 `Setup\Export-Installer.ps1` 的 `$flavorSuffix` 改为
+  「框架依赖 = 空串、全内置 = -was-fd」，`Setup\AutoLoginNet.Setup.wixproj` 注释、
+  `Setup\Verify-ElevatedUpgrade.ps1` 的恢复提示与 README 全部同步。
+- **版本升到 2.0.9.5.dev**（`AutoLoginNet.App\AutoLoginNet.App.csproj`）：`Version` / `AssemblyVersion` /
+  `FileVersion` 为 `2.0.9.5`，`InformationalVersion` 为 `2.0.9.5.dev`；MSI 的 `ProductVersion` 是纯数字
+  `2.0.9.5`，ARP 里显示的也是它。
+- **重新打包**：`dotnet build Setup\AutoLoginNet.Setup.wixproj -c Release` 出全内置，
+  再加 `-p:SetupFlavor=FrameworkDependent` 出框架依赖；两份 MSI 都通过安装包中文化断言。
 
 ### 系统首选网卡：连默认路由跃点一起改
 

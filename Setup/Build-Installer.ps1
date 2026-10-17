@@ -6,13 +6,13 @@
     流程：
       1) dotnet publish 发布（默认全内置；-FrameworkDependent 时不带任何运行时）
       2) 收集发布目录中的全部文件，生成 WiX 组件清单（Install.wxs）
-      3) 用 WiX 编译出单个 MSI，并打一份免安装 ZIP
+      3) 用 WiX 编译出单个 MSI（不再打免安装 ZIP）
 
     只交付两种形态：
       - 默认（全内置）：.NET 与 Windows App Runtime 都打进包，目标机零运行时依赖，
         安装包约 47 MB，产物文件名带 -was-fd 后缀。不确定目标机装过什么就用这个。
       - -FrameworkDependent：安装包约 7 MB，目标机必须先装 .NET 10 与 Windows App Runtime 1.8，
-        产物文件名带 -fd 后缀。
+        产物文件名不带形态后缀（AutoLoginNet-<版本>-x64.msi）。
       两者是**同一个产品、两种载荷**，有意设计成不能同时安装（细节见下方参数区注释）：
         - UpgradeCode 相同：它标识「产品线 / 升级路径」，由固定种子生成，与形态无关，
           所以两种形态落进同一条升级链；
@@ -20,7 +20,7 @@
           每次重编出来的 ProductCode 都不一样 —— ProductCode 标识的是「某一次构建的某个包」；
         - 「同一个 UpgradeCode + 相同 Version + AllowSameVersionUpgrades」使装了其中一种再装
           另一种时被判定为**同版本升级**：先卸载旧的再装新的（原地覆盖），而不是并排两份。
-      文件名后缀不同，可同时放在 dist 里互不覆盖。
+      文件名不同（全内置带 -was-fd、框架依赖不带后缀），可同时放在 dist 里互不覆盖。
 
     第三种「自包含 .NET」（只含 .NET、仍需系统预装 Windows App Runtime，约 31 MB）已停止交付：
     它省下的空间有限，却把「装不上」的风险留给了用户。-SelfContained 现在直接报错，
@@ -51,7 +51,7 @@ param(
     #   1) UpgradeCode 是「产品线」的身份，由 Build-Installer 用固定种子 Get-StableGuid 生成，
     #      与开关无关 —— 两种形态、以及以后每个版本，都落在同一条升级链上；
     #   2) 模板里**不写 ProductCode**，WiX 每次编译自动生成一个新的：实测 dist 里
-    #      -fd 与 -was-fd 两份 MSI 的 ProductCode 不同，本机已装的旧 2.0.8 又是另一个。
+    #      全内置与框架依赖两份 MSI 的 ProductCode 不同，本机已装的旧 2.0.8 又是另一个。
     #      ProductCode 标识「某一次构建出的某个产品包」，本来就不该跨构建复用；
     #   3) 相同 UpgradeCode + 相同 Version + Product.wxs 的 AllowSameVersionUpgrades="yes"，
     #      让「已装其中一种、再装另一种」被 Windows Installer 判为**同版本升级**：卸载旧包、
@@ -59,7 +59,7 @@ param(
     #   4) 反过来，若给两种形态不同的 UpgradeCode（或不同产品名），它们就成了两个独立产品：
     #      ARP 两条记录、两套开始菜单与开机自启互相覆盖、覆盖升级失效，而「装新版自动找到
     #      旧版装在哪并原地覆盖」正是本项目的核心需求之一。所以「不能同时装」是必须保留的行为。
-    #   用户要换形态：先卸载已安装的那个，再装另一个即可（.zip 免安装版不写注册表，不受此限）。
+    #   用户要换形态：先卸载已安装的那个，再装另一个即可。
     [switch]$FrameworkDependent,
     # 全内置本身就是默认形态；保留这个开关只为兼容既有命令行与 Setup\AutoLoginNet.Setup.wixproj 里的显式写法。
     [switch]$WindowsAppSDKSelfContained,
@@ -71,7 +71,7 @@ param(
     # 发布与裁剪归 Export-Installer.ps1 -PrepareOnly 管，避免两处各发布/裁剪一遍。
     [switch]$GenerateOnly,
     # 用外部（MSBuild 的 WiX 工程）已编译好的 MSI 定稿：跑中文化断言 → 复制成 dist 下的规范
-    # 文件名 → 打免安装 ZIP。用于 .wixproj 的生成后步骤，保证两边产出的断言与命名完全一致。
+    # 文件名。用于 .wixproj 的生成后步骤，保证两边产出的断言与命名完全一致。
     [string]$FinalizeMsi
 )
 
@@ -83,8 +83,9 @@ if ($SelfContained) {
     throw '不再交付「自包含 .NET」形态（包内含 .NET，但仍要求目标机预装 Windows App Runtime，省不了多少空间却容易装不上）。现在只有两种交付形态：默认的「全内置」与 -FrameworkDependent。'
 }
 
-# 文件名后缀：两种形态的产物必须能同时躺在 dist 里，否则后一次导出会覆盖前一次
-$flavorSuffix = if ($FrameworkDependent) { '-fd' } else { '-was-fd' }
+# 文件名后缀：两种形态的产物必须能同时躺在 dist 里，否则后一次导出会覆盖前一次。
+# 框架依赖版刻意不带形态后缀（用户要求），全内置版带 -was-fd 以便区分。
+$flavorSuffix = if ($FrameworkDependent) { '' } else { '-was-fd' }
 $flavorLabel = if ($FrameworkDependent) { '框架依赖（需预装运行时）' } else { '全内置（含 .NET 与 Windows App Runtime）' }
 
 # 版本号以 csproj 为唯一来源。此前脚本里另写了一份 '2.0.5' 默认值，结果应用已到 v2.0.7
@@ -114,9 +115,6 @@ $setupDir = $PSScriptRoot
 $objDir = Join-Path $setupDir 'obj'
 $outDir = Join-Path $repoRoot 'dist'
 $msiPath = Join-Path $outDir "AutoLoginNet-$VersionLabel$flavorSuffix-x64.msi"
-# 用架构短名（x64）而不是完整 RID（win-x64），与 MSI 的命名保持一致
-$archLabel = $RuntimeIdentifier -replace '^win-', ''
-$zipPath = Join-Path $outDir "AutoLoginNet-$VersionLabel-portable$flavorSuffix-$archLabel.zip"
 
 function Write-Step([string]$text) { Write-Host "==> $text" -ForegroundColor Cyan }
 
@@ -153,30 +151,13 @@ function Assert-InstallerLocalization([string]$Msi) {
     if ($failures.Count -gt 0) { throw "安装包中文化校验失败（$($failures.Count) 项）" }
 }
 
-# --------------------------------------------------------------- 免安装压缩包
-# 与 MSI 同源的发布负载，解压即用（不需要管理员权限）。
-# 用 .NET 的 ZipFile 而不是 Compress-Archive：后者对同一批文件要慢数倍，
-# 且 Optimal 级别在这里压不出更小的结果。
-function New-PortableZip([string]$PublishDir, [string]$Zip) {
-    Write-Step '生成免安装压缩包'
-    if (Test-Path $Zip) { Remove-Item $Zip -Force }
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    [System.IO.Compression.ZipFile]::CreateFromDirectory(
-        $PublishDir,
-        $Zip,
-        [System.IO.Compression.CompressionLevel]::Optimal,
-        $false)   # $false: 不把 publishDir 这一层目录名包进去
-}
-
 function Show-InstallerSummary {
     $msi = Get-Item $msiPath
-    $zip = Get-Item $zipPath
     $payloadMb = [math]::Round((Get-ChildItem $publishDir -Recurse -File | Measure-Object Length -Sum).Sum / 1MB, 1)
     Write-Host ""
     Write-Host "产物已生成（$flavorLabel）：" -ForegroundColor Green
     Write-Host "  MSI      $([math]::Round($msi.Length / 1MB, 1)) MB  $($msi.Name)"
-    Write-Host "  免安装包  $([math]::Round($zip.Length / 1MB, 1)) MB  $($zip.Name)"
-    Write-Host "  解包后    $payloadMb MB  ($((Get-ChildItem $publishDir -Recurse -File).Count) 个文件)"
+    Write-Host "  载荷      $payloadMb MB  ($((Get-ChildItem $publishDir -Recurse -File).Count) 个文件)"
     Write-Host "  输出目录  $outDir"
 }
 
@@ -199,13 +180,13 @@ function Assert-PayloadFlavor {
 
 # ------------------------------------------------- 定稿外部编译的 MSI（.wixproj 生成后步骤）
 # 走这条路时 WiX 源文件由 MSBuild 编译，本脚本不再发布/裁剪/编译，只做「校验 + 落盘 + 打包」，
-# 从而保证 VS 生成菜单与命令行脚本产出的断言、文件名、ZIP 完全一致。
+# 从而保证 VS 生成菜单与命令行脚本产出的断言与文件名完全一致。
 if ($FinalizeMsi) {
     if (-not (Test-Path -LiteralPath $FinalizeMsi)) {
         throw "找不到 MSBuild 产出的 MSI：$FinalizeMsi（先构建 Setup\AutoLoginNet.Setup.wixproj）"
     }
     if (-not (Test-Path -LiteralPath $publishDir)) {
-        throw "找不到发布目录 $publishDir —— 免安装 ZIP 需要它。请先跑 Export-Installer.ps1 -PrepareOnly 准备载荷。"
+        throw "找不到发布目录 $publishDir —— 形态自检需要它。请先跑 Export-Installer.ps1 -PrepareOnly 准备载荷。"
     }
     Write-Host "==> 定稿 MSBuild 编译的安装包：$FinalizeMsi" -ForegroundColor Cyan
     # 先确认载荷形态、再校验中文化、最后才落盘：dist 里永远不出现「形态不符」或「没过断言」的安装包
@@ -214,7 +195,6 @@ if ($FinalizeMsi) {
     New-Item -ItemType Directory -Path $outDir -Force | Out-Null
     Write-Step "复制到 dist 并规范命名"
     Copy-Item -LiteralPath $FinalizeMsi -Destination $msiPath -Force
-    New-PortableZip -PublishDir $publishDir -Zip $zipPath
     Show-InstallerSummary
     return
 }
@@ -464,6 +444,4 @@ Get-ChildItem $outDir -Filter '*.wixpdb' -ErrorAction SilentlyContinue | Remove-
 # ------------------------------------------------- 4.5) 安装包中文化断言（失败即中止）
 Assert-InstallerLocalization $msiPath
 
-# --------------------------------------------------------------- 5) 免安装压缩包
-New-PortableZip -PublishDir $publishDir -Zip $zipPath
 Show-InstallerSummary

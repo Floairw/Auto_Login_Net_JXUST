@@ -50,16 +50,16 @@
                                        带 .dev 之类标签的版本放这里会直接编译失败；
         AssemblyVersion/FileVersion —— 同理，纯数字；
         InformationalVersion        —— 给人看的完整版本，可以带标签，界面「设置页」和启动日志显示它。
-      所以「2.0.9.1.dev」这种带标签的版本被拆成两份：数字部分 2.0.9.1 进前三项，标签 .dev 进
-      InformationalVersion；打包脚本用 InformationalVersion 作产物文件名（AutoLoginNet-2.0.9.1.dev-was-fd-x64.msi），
-      用 Version 写 MSI（ARP 里显示 2.0.9.1）——两者自动对应，不会写出 WiX 编不过的包。
+      所以「2.0.9.5.dev」这种带标签的版本被拆成两份：数字部分 2.0.9.5 进前三项，标签 .dev 进
+      InformationalVersion；打包脚本用 InformationalVersion 作产物文件名（AutoLoginNet-2.0.9.5.dev-was-fd-x64.msi），
+      用 Version 写 MSI（ARP 里显示 2.0.9.5）——两者自动对应，不会写出 WiX 编不过的包。
     -->
-    <Version>2.0.9.1</Version>
-    <!-- AssemblyVersion/FileVersion 最多 4 段：2.0.9.1 已经是四段，不能再补 .0 -->
-    <AssemblyVersion>2.0.9.1</AssemblyVersion>
-    <FileVersion>2.0.9.1</FileVersion>
-    <InformationalVersion>2.0.9.1.dev</InformationalVersion>
-    <!-- 别让 SDK 往 InformationalVersion 后面追加 "+<git sha>"，否则界面会显示 2.0.9.1.dev+81fbfa3 -->
+    <Version>2.0.9.5</Version>
+    <!-- AssemblyVersion/FileVersion 最多 4 段：2.0.9.5 已经是四段，不能再补 .0 -->
+    <AssemblyVersion>2.0.9.5</AssemblyVersion>
+    <FileVersion>2.0.9.5</FileVersion>
+    <InformationalVersion>2.0.9.5.dev</InformationalVersion>
+    <!-- 别让 SDK 往 InformationalVersion 后面追加 "+<git sha>"，否则界面会显示 2.0.9.5.dev+81fbfa3 -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <Product>校园网认证客户端</Product>
   </PropertyGroup>

@@ -232,7 +232,7 @@ Write-Host "通过 $passed 项，失败 $failed 项" -ForegroundColor $(if ($fai
 Write-Host ''
 Write-Host '如需卸载本次安装：' -ForegroundColor DarkGray
 Write-Host "  msiexec /x `"$MsiPath`" /qn" -ForegroundColor DarkGray
-Write-Host '（注意：卸载只会删掉它自己装的文件；安装目录里原有的便携版/用户文件不受影响，'
-Write-Host '  但若你想恢复成本次安装之前的状态，请重新解压 dist\AutoLoginNet-*-portable-*.zip。）' -ForegroundColor DarkGray
+Write-Host '（注意：卸载只会删掉它自己装的文件；安装目录里原有的用户文件不受影响，'
+Write-Host '  但若你想恢复成本次安装之前的状态，请重新安装此前版本导出的 MSI。）' -ForegroundColor DarkGray
 
 exit ($failed -eq 0 ? 0 : 1)

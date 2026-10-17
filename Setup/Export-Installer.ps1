@@ -1,28 +1,28 @@
 <#
 .SYNOPSIS
-    一键导出校园网认证客户端安装包（MSI + 免安装 ZIP）。
+    一键导出校园网认证客户端安装包（只出 MSI，不再打免安装 ZIP）。
 
 .DESCRIPTION
     按顺序完成：
       1) 编译原生自定义动作（升级时定位旧版目录用）——缺失或落后于源码时强制重编；
       2) dotnet publish 生成发布目录（Release / win-x64）；
       3) 剔除「运行时不会被加载」的文件（Setup\Remove-UnusedPublishFiles.ps1）；
-      4) WiX 生成 MSI，并压缩出免安装 ZIP；
+      4) WiX 生成 MSI；
       5) 打印产物路径、大小与 SHA256；可选复制到桌面；
       6) 可选（-BundleRuntime）把 Setup\Runtime\ 下的运行时安装器一起放进 dist\Runtime\。
 
-    只交付两种形态（同一份产品定义，只是载荷不同）：
+    只交付两种形态（同一份产品定义，只是载荷不同），产物只有 MSI：
       - 默认（全内置）：.NET 与 Windows App Runtime 原生层全部打进包，目标机零运行时依赖，
-        安装包约 47 MB，产物 AutoLoginNet-<版本>-was-fd-x64.msi / AutoLoginNet-<版本>-portable-was-fd-x64.zip；
+        安装包约 47 MB，产物 AutoLoginNet-<版本>-was-fd-x64.msi；
       - -FrameworkDependent：包内不含运行时，目标机须先装 .NET 10 与 Windows App Runtime 1.8，
-        安装包约 7 MB，产物名带 -fd 后缀。
+        安装包约 7 MB，产物名不带形态后缀（AutoLoginNet-<版本>-x64.msi）。
       两者可同时躺在 dist 里互不覆盖。
 
     第三种「自包含 .NET」（只含 .NET、仍需系统 Windows App Runtime）已停止交付，
     -SelfContained 现在直接报错——省下的空间有限，却把「装不上」的风险留给了用户。
 
     裁剪是「先复制一份再裁剪」，原发布目录不会被破坏：
-    先裁剪到 dist\AutoLoginNet，MSI/ZIP 都从裁剪后的目录出。
+    先裁剪到 dist\AutoLoginNet，MSI 从裁剪后的目录出。
 
 .PARAMETER Version
     MSI 的数字版本（1~4 段纯数字，如 2.0.9.1）。省略时从
@@ -34,7 +34,7 @@
     MSI 的 ProductVersion 只认纯数字，标签进不去安装包，ARP 里只会显示数字版本。
 
 .PARAMETER FrameworkDependent
-    产出框架依赖版（不含运行时，约 7 MB，文件名带 -fd 后缀）。不加任何形态开关时产出的是全内置版。
+    产出框架依赖版（不含运行时，约 7 MB，文件名不带形态后缀）。不加任何形态开关时产出的是全内置版。
 
 .PARAMETER SelfContained
     已停止交付形态，传了会直接报错（保留这个开关只为给出明确提示，而不是悄悄按全内置导出）。
@@ -48,7 +48,7 @@
     不做裁剪，直接打出完整发布目录（出问题时用来对比排查）。
 
 .PARAMETER Desktop
-    构建完成后把 MSI 与 ZIP 复制到桌面。
+    构建完成后把 MSI 复制到桌面。
 
 .PARAMETER SkipVerify
     跳过裁剪后自动运行一次 Verify-PrunedPublish.ps1（不推荐；裁剪安全性靠它兜底）。
@@ -166,8 +166,9 @@ if ($SkipPublish -and -not $PrepareOnly) {
     throw '-SkipPublish 只与 -PrepareOnly 一起用（语义：复用已发布并裁剪好的载荷，只重新生成 WiX 源文件）。'
 }
 
-# 两种形态共用同一套流程，只用后缀区分文件名，这样两版可以同时躺在 dist 里
-$flavorSuffix = if ($FrameworkDependent) { '-fd' } else { '-was-fd' }
+# 两种形态共用同一套流程：全内置文件名带 -was-fd，框架依赖不带形态后缀（用户要求），
+# 这样两版仍能同时躺在 dist 里
+$flavorSuffix = if ($FrameworkDependent) { '' } else { '-was-fd' }
 # 全内置版（默认）必须同时给 --self-contained true：单传 -p:WindowsAppSDKSelfContained=true 时
 # 命令行上的 -p:SelfContained=false（或 csproj 的 <SelfContained>false</SelfContained>）
 # 会让它退化成「只含 Windows App Runtime、不含 .NET」的中间形态。
@@ -176,7 +177,6 @@ $flavorLabel = if ($FrameworkDependent) { '框架依赖（需预装运行时）'
 Write-Host "交付形态：$flavorLabel"
 
 $msiPath = Join-Path $distDir "AutoLoginNet-$VersionLabel$flavorSuffix-x64.msi"
-$zipPath = Join-Path $distDir "AutoLoginNet-$VersionLabel-portable$flavorSuffix-x64.zip"
 
 # -PrepareOnly -SkipPublish：载荷已发布并裁剪好，只重新生成 WiX 源文件（.wixproj 增量构建走这条，
 # 免得每次 IDE 生成都重新发布上百 MB）。这条路径连原生自定义动作检查都不做——生成 Product.wxs 时
@@ -291,7 +291,7 @@ else {
     }
 }
 
-# ---------------------------------------------------------------- 4. 生成 MSI + ZIP（或只生成源文件）
+# ---------------------------------------------------------------- 4. 生成 MSI（或只生成源文件）
 $installer = Join-Path $PSScriptRoot 'Build-Installer.ps1'
 $installerArgs = @{ Version = $Version; VersionLabel = $VersionLabel; SkipPublish = $true }
 if ($FrameworkDependent) { $installerArgs['FrameworkDependent'] = $true }
@@ -299,7 +299,7 @@ if ($WindowsAppSDKSelfContained) { $installerArgs['WindowsAppSDKSelfContained'] 
 
 if ($PrepareOnly) {
     # 只生成 WiX 源文件，编译交给 MSBuild 的 Setup\AutoLoginNet.Setup.wixproj。
-    # 产出（断言、dist 规范命名、免安装 ZIP）由该工程的生成后步骤调 Build-Installer.ps1 -FinalizeMsi 补完。
+    # 产出（断言、dist 规范命名）由该工程的生成后步骤调 Build-Installer.ps1 -FinalizeMsi 补完。
     Write-Step '生成 WiX 源文件（编译交给 MSBuild）'
     $installerArgs['GenerateOnly'] = $true
     & $pwshExe -NoProfile -File $installer @installerArgs
@@ -314,14 +314,14 @@ if ($PrepareOnly) {
     }
 }
 
-Write-Step '生成 MSI 与免安装 ZIP'
+Write-Step '生成 MSI'
 & $pwshExe -NoProfile -File $installer @installerArgs
 if ($LASTEXITCODE -ne 0) { throw "生成安装包失败，退出码 $LASTEXITCODE" }
 
 # ---------------------------------------------------------------- 5. 汇总
 Write-Step '产物'
 $results = @()
-foreach ($path in @($msiPath, $zipPath)) {
+foreach ($path in @($msiPath)) {
     if (Test-Path -LiteralPath $path) {
         $item = Get-Item -LiteralPath $path
         $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash

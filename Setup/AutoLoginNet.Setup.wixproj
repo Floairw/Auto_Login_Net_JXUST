@@ -5,7 +5,7 @@
 
       生成前  -> Setup\Export-Installer.ps1 -PrepareOnly ：发布载荷 + 裁剪 + 生成 Setup\obj\*.wxs
       编译    -> WiX SDK 编译 obj\Product.wxs + obj\Install.wxs（-loc 传中文 wxl，与命令行一致）
-      生成后  -> Setup\Build-Installer.ps1 -FinalizeMsi  ：中文化断言 + 落 dist 规范命名 + 免安装 ZIP
+      生成后  -> Setup\Build-Installer.ps1 -FinalizeMsi  ：中文化断言 + 落 dist 规范命名
 
     命令行脚本仍是唯一事实来源；本工程只负责把同样的步骤挂到 MSBuild 上，因此**不依赖 FireGiant
     HeatWave 授权**——HeatWave（FireGiant.HeatWave.Dev17 v1.0.8）是按 NuGet 的 WixToolset.Sdk
@@ -42,7 +42,7 @@
     <!--
       交付形态（与命令行开关一一对应，只保留两种）：
         AllBundled（默认）  = .NET 与 Windows App Runtime 都进包，零运行时依赖，约 47 MB，名带 -was-fd；
-        FrameworkDependent  = 需预装 .NET 10 + Windows App Runtime 1.8，约 7 MB，产物名带 -fd。
+        FrameworkDependent  = 需预装 .NET 10 + Windows App Runtime 1.8，约 7 MB，产物名不带形态后缀。
       SelfContained（只含 .NET、仍需系统 Windows App Runtime，约 31 MB）已停止交付：传了会由脚本报错。
     -->
     <SetupFlavor Condition=" '$(SetupFlavor)' == '' ">AllBundled</SetupFlavor>
@@ -58,7 +58,7 @@
     <!--
       载荷配置固定为 Release，与解决方案当前配置无关。原因：发布目录固定是 dist\AutoLoginNet、
       dist 产物名里也不带配置标记；如果跟着解决方案配置走，在 VS 里用 Debug 生成就会把 Debug 载荷
-      灌进 dist\AutoLoginNet 并盖上同名的 MSI/ZIP，与之前 Release 出的一对不一致（实测踩到过）。
+      灌进 dist\AutoLoginNet 并盖上同名的 MSI，与之前 Release 出的那个不一致（实测踩到过）。
       要故意出 Debug 载荷的包，传 -p:SetupPayloadConfiguration=Debug 自己承担。
     -->
     <SetupPayloadConfiguration Condition=" '$(SetupPayloadConfiguration)' == '' ">Release</SetupPayloadConfiguration>
@@ -135,7 +135,7 @@
     交付形态参与增量判断。
     不这么做的话：先用默认形态生成过，再带 -p:SetupFlavor=FrameworkDependent 生成，
     PrepareSetupSources 会因为 obj 下的 .wxs 比源码新而被判定「已是最新」直接跳过，
-    于是拿自包含载荷去印 -fd 的名字（静默产出错包）。Build-Installer.ps1 的形态自检会拦下它，
+    于是拿自包含载荷去印框架依赖版的名字（静默产出错包）。Build-Installer.ps1 的形态自检会拦下它，
     但正确做法是形态一换就重新准备载荷：这里把形态写进一个时间戳文件，并把它算进 Inputs。
   -->
   <Target Name="StampSetupFlavor">
