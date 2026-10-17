@@ -8,8 +8,12 @@ namespace AutoLoginNet.Services;
 public sealed record AutoStartCommand(
     string ExecutablePath,
     string Arguments,
-    string TaskName = "AutologinForDrcom",
-    string Description = "校园网认证客户端自动登录");
+    string TaskName = AutoStartCommand.DefaultTaskName,
+    string Description = "校园网认证客户端自动登录")
+{
+    /// <summary>默认计划任务名称。</summary>
+    public const string DefaultTaskName = "AutologinForDrcom";
+}
 
 /// <summary>管理开机自启。</summary>
 public interface IAutoStartService

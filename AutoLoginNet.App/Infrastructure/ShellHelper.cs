@@ -180,16 +180,4 @@ public static class ShellHelper
         return await dialog.ShowAsync() == ContentDialogResult.Primary;
     }
 
-    /// <summary>在界面线程上执行动作。</summary>
-    public static void OnUiThread(Action action)
-    {
-        var dispatcher = App.MainWindow?.DispatcherQueue;
-        if (dispatcher is null || dispatcher.HasThreadAccess)
-        {
-            action();
-            return;
-        }
-
-        dispatcher.TryEnqueue(() => action());
-    }
 }

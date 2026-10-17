@@ -13,8 +13,6 @@ namespace AutoLoginNet.Services;
 /// </summary>
 public sealed class ScheduledTaskAutoStartService : IAutoStartService
 {
-    private const string DefaultTaskName = "AutologinForDrcom";
-
     private readonly ILogService _log;
     private readonly string? _markerFile;
 
@@ -32,7 +30,7 @@ public sealed class ScheduledTaskAutoStartService : IAutoStartService
         {
             // 只读一次标记文件：既用于取任务名，也作为查询失败时的兜底
             AutoStartMarker? marker = ReadMarker();
-            string taskName = marker?.TaskName is { Length: > 0 } name ? name : DefaultTaskName;
+            string taskName = marker?.TaskName is { Length: > 0 } name ? name : AutoStartCommand.DefaultTaskName;
             bool? taskExists = QueryTaskState(taskName);
 
             // 能明确查询到时以实际状态为准；查询本身失败（通常是权限不足）才退回标记文件

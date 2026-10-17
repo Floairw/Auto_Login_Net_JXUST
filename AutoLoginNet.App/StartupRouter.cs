@@ -20,12 +20,6 @@ public static class StartupRouter
     /// <summary>自启模式参数（由计划任务传入）。</summary>
     public const string AutoStartArgument = "--autostart";
 
-    /// <summary>内部参数：以管理员身份执行自启注册后退出。</summary>
-    public const string RegisterAutoStartArgument = "--register-autostart";
-
-    /// <summary>内部参数：以管理员身份应用 DNS 后退出。</summary>
-    public const string ApplyDnsArgument = "--apply-dns";
-
     /// <summary>本进程真实的命令行参数（不含可执行文件路径本身）。</summary>
     public static string[] GetCommandLineArguments()
     {

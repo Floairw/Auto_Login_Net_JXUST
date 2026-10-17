@@ -25,9 +25,6 @@ public sealed class UiSettings
 
     /// <summary>登录成功后自动最小化窗口。</summary>
     public bool MinimizeAfterLogin { get; set; }
-
-    /// <summary>日志页默认显示的行数。</summary>
-    public int LogTailLines { get; set; } = 500;
 }
 
 /// <summary>界面偏好的读写。</summary>
