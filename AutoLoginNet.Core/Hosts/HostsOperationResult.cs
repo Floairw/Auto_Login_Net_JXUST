@@ -22,17 +22,9 @@ public sealed record HostsOperationResult(
     /// <summary>把结果原子写入指定文件。</summary>
     public static void WriteTo(string path, HostsOperationResult result)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(path);
-
-        string? directory = Path.GetDirectoryName(path);
-        if (!string.IsNullOrEmpty(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-
-        string temp = path + ".tmp";
-        File.WriteAllText(temp, JsonSerializer.Serialize(result, AppJsonContext.Default.HostsOperationResult));
-        File.Move(temp, path, overwrite: true);
+        AtomicFile.WriteAllText(
+            path,
+            JsonSerializer.Serialize(result, AppJsonContext.Default.HostsOperationResult));
     }
 
     /// <summary>读取结果文件；不存在或损坏时返回 null。</summary>

@@ -75,16 +75,8 @@ public sealed class JsonSettingsService : ISettingsService
         {
             options.Normalize();
 
-            string? directory = Path.GetDirectoryName(FilePath);
-            if (!string.IsNullOrEmpty(directory))
-            {
-                Directory.CreateDirectory(directory);
-            }
-
             string json = JsonSerializer.Serialize(options, AppJsonContext.Default.AppOptions);
-            string temp = FilePath + ".tmp";
-            File.WriteAllText(temp, json);
-            File.Move(temp, FilePath, overwrite: true);
+            AtomicFile.WriteAllText(FilePath, json);
 
             _log.Info($"配置已保存到 {FilePath}", "配置");
         }

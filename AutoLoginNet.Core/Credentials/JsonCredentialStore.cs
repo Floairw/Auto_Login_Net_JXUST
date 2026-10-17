@@ -105,12 +105,6 @@ public sealed class JsonCredentialStore : ICredentialStore
 
         try
         {
-            string? directory = Path.GetDirectoryName(FilePath);
-            if (!string.IsNullOrEmpty(directory))
-            {
-                Directory.CreateDirectory(directory);
-            }
-
             var record = new CredentialRecord
             {
                 SchemaVersion = CredentialRecord.CurrentSchemaVersion,
@@ -121,7 +115,7 @@ public sealed class JsonCredentialStore : ICredentialStore
             };
 
             string json = JsonSerializer.Serialize(record, AppJsonContext.Default.CredentialRecord);
-            WriteAtomically(FilePath, json);
+            AtomicFile.WriteAllText(FilePath, json);
 
             lock (_sync)
             {
@@ -155,13 +149,5 @@ public sealed class JsonCredentialStore : ICredentialStore
         {
             _log.Error($"清除凭据失败：{ex.Message}", "凭据");
         }
-    }
-
-    /// <summary>先写临时文件再替换，避免写入中途崩溃留下半截 JSON。</summary>
-    private static void WriteAtomically(string path, string content)
-    {
-        string temp = path + ".tmp";
-        File.WriteAllText(temp, content);
-        File.Move(temp, path, overwrite: true);
     }
 }
