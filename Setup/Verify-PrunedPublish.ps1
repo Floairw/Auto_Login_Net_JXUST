@@ -7,8 +7,10 @@
     启动应用 → 切遍四个页面 → 触发网络检测与日志读取 → 确认无崩溃、
     无未处理异常、无「找不到文件/程序集」类错误，然后关闭进程。
 
-    使用独立的数据目录隔离（-DataDir 可选）：默认复用真实 %AppData%，
-    因为要验证的正是「读真实日志/配置」这条路径。
+    数据目录隔离到临时目录（通过环境变量 AUTOLOGIN_DATA_DIR 覆盖，见 AppPaths）：
+    先塞一份多分类的种子日志，既能验证「日志页真的从磁盘读文件」这条路径，
+    又不会污染真实 %AppData%；顺带避开了一个环境陷阱——真实日志积累到上千条时，
+    日志列表页的元素数量会让 UIA 的一次 FindAll 调用超时，验证会假失败。
 
 .PARAMETER PublishDir
     被验证的发布目录。
@@ -53,6 +55,49 @@ if (-not (Test-Path -LiteralPath $exe)) {
     throw "发布目录里没有 AutoLoginNet.exe：$PublishDir"
 }
 
+# ------------------------------------------------ 隔离的数据目录 + 种子日志
+# 应用通过 AUTOLOGIN_DATA_DIR 认识这个目录；验证结束后恢复原值并删掉临时目录。
+$previousDataDir = $env:AUTOLOGIN_DATA_DIR
+$verifyDataDir = Join-Path ([System.IO.Path]::GetTempPath()) ('autologin-verify-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $verifyDataDir -Force | Out-Null
+
+$seedSpecs = @(
+    'INFO|网络|开始探测网络环境',
+    'INFO|网络|认证服务器可达（18 ms）',
+    'INFO|网络|外网连通性正常',
+    'INFO|登录|开始提交认证请求',
+    'INFO|登录|认证成功：已可上网',
+    'WARN|登录|上次登录结果未知，按未登录处理',
+    'INFO|配置|读取 appsettings.json 成功',
+    'INFO|配置|保存界面设置成功',
+    'INFO|开机自启|登录时自动启动已开启',
+    'WARN|开机自启|计划任务不存在，已跳过',
+    'INFO|网络|DNS 延迟测量完成',
+    'INFO|网络|当前上网网卡：以太网'
+)
+$seedCount = $seedSpecs.Count * 2
+$seedBase = (Get-Date).AddMinutes(-$seedCount)
+$seedLines = [System.Collections.Generic.List[string]]::new()
+for ($round = 0; $round -lt 2; $round++) {
+    for ($i = 0; $i -lt $seedSpecs.Count; $i++) {
+        $parts = $seedSpecs[$i].Split('|')
+        $ts = $seedBase.AddMinutes(($round * $seedSpecs.Count) + $i).ToString('yyyy-MM-dd HH:mm:ss')
+        $seedLines.Add(('{0} [{1}] ({2}) {3}' -f $ts, $parts[0], $parts[1], $parts[2]))
+    }
+}
+$seedLog = Join-Path $verifyDataDir 'autologin.log'
+Set-Content -LiteralPath $seedLog -Value $seedLines -Encoding utf8
+
+function Remove-VerifyDataDir {
+    $env:AUTOLOGIN_DATA_DIR = $previousDataDir
+    if ($verifyDataDir -and (Test-Path -LiteralPath $verifyDataDir)) {
+        try { Remove-Item -LiteralPath $verifyDataDir -Recurse -Force } catch { }
+    }
+}
+
+$env:AUTOLOGIN_DATA_DIR = $verifyDataDir
+$diagnostics.Add("隔离数据目录：$verifyDataDir（种子日志 $seedCount 条）")
+
 # 记录启动前的事件日志位置，用于事后判断有没有新的应用崩溃记录
 $evtLog = 'Application'
 $startTime = Get-Date
@@ -63,6 +108,7 @@ Start-Sleep -Seconds 10
 Add-Check '进程存活（未在启动阶段崩溃）' (-not $proc.HasExited) "pid=$($proc.Id)"
 if ($proc.HasExited) {
     $diagnostics.Add('进程已退出，退出码=' + $proc.ExitCode)
+    Remove-VerifyDataDir
     return [PSCustomObject]@{ Passed = $false; Checks = $checks; Failures = $failures; Diagnostics = $diagnostics }
 }
 
@@ -81,6 +127,7 @@ while ($sw.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
 Add-Check '主窗口出现（Windows App SDK 自举成功）' ($null -ne $window)
 if ($null -eq $window) {
     try { $proc.Kill() } catch { }
+    Remove-VerifyDataDir
     return [PSCustomObject]@{ Passed = $false; Checks = $checks; Failures = $failures; Diagnostics = $diagnostics }
 }
 
@@ -150,6 +197,10 @@ foreach ($page in $pages) {
             $detail = "共 $total 条"
         }
         Add-Check '日志页面从磁盘读到记录' $ok $detail
+        if ($status -and $status -match '共 (\d+) 条') {
+            # 种子日志只存在于磁盘上：条数不低于种子数量，才说明读的是文件而不是内存缓冲
+            Add-Check '日志页读到了种子日志（走磁盘路径）' ([int]$Matches[1] -ge $seedCount) ("种子 $seedCount 条")
+        }
 
         # 分类多样性：只出现登录/凭据说明只读了内存缓冲
         $listCond = New-Object System.Windows.Automation.PropertyCondition(
@@ -223,6 +274,8 @@ try {
 catch {
     $diagnostics.Add("事件日志读取失败：$($_.Exception.Message)")
 }
+
+Remove-VerifyDataDir
 
 [PSCustomObject]@{
     Passed      = ($failures.Count -eq 0)
