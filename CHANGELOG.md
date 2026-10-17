@@ -5,6 +5,40 @@ v2.0 是一次彻底重构，v1.x 的历史记录保留在文件末尾。
 
 ---
 
+## 2026-10-18 — 首选网卡真正影响选路：连默认路由跃点一起改
+
+**只改接口跃点还不够：这台机器的默认路由自带显式跃点，Windows 依旧按路由选路，认证照样从 WLAN 走。**
+
+- **真机根因**：接口跃点已改（以太网 2 = 10、WLAN = 9000），但
+  `Get-NetRoute -DestinationPrefix 0.0.0.0/0` 显示 WLAN 的路由跃点仍是 0、
+  以太网 2 仍是 25，`Find-NetRoute -RemoteIPAddress 8.8.8.8` 与认证服务器地址都返回
+  **InterfaceAlias WLAN**。Windows 选默认路由比的是「路由自身跃点 + 接口跃点」，
+  而这两条是带显式跃点的 Manual 路由，接口跃点 10/9000 抵消不了 0 vs 25 的差距。
+- **新增默认路由跃点调整**（`AutoLoginNet.Core\Network\AdapterPriority.cs` 新增
+  `AdapterRouteState` / `AdapterRouteChange` / `AdapterRoutePlan`、
+  `AdapterPriorityPlanner.CreateRouteApplyPlan`）：首选网卡的 `0.0.0.0/0` 路由跃点设 0，
+  其余网卡的默认路由设 9000；首选网卡没有默认路由时明确报错「没有默认路由（没有可用网关）」。
+  **断开网卡的默认路由一律不写**：真机上断开网卡也会留在路由表里，但在断开接口上执行
+  `set route` 不可靠，报错会导致整单回滚；而它不写也不会抢路——选路比的是
+  「路由跃点 + 接口跃点」，断开网卡 0+25=25，首选网卡 0+10=10，仍首选优先。
+  命令用 `netsh interface ipv4 set route <prefix> interface=<名称> nexthop=<网关> metric=<n> store=active`，
+  **store=active** 让改动只到下次重启——重启后 DHCP 会重建路由，不留持久化垃圾；
+  接口跃点仍保持持久化，两者都记进快照。
+- **快照与恢复同时覆盖路由**（`AdapterPrioritySnapshot` 新增可空 `Routes`，
+  旧版快照文件仍可读）：恢复时按「网卡名 + 下一跳」匹配当前路由写回原跃点；
+  网关都变了的旧路由不硬写，避免写回一条已经失效的网关。
+- **重复应用不会覆盖原值**（新增 `AdapterPriorityPlanner.CreateSnapshot`）：
+  已有旧快照时保留旧的原跃点（按网卡名、网卡名+下一跳匹配），
+  否则「设置 → 再设置 → 恢复」会把中间状态当成出厂状态，真机上已经踩到。
+  系统里已消失的网卡/路由从新快照里丢弃（无法恢复），新出现的按当前值记录。
+- **失败回滚**先回滚默认路由、再回滚接口跃点（两者都倒序、用 `CancellationToken.None`），
+  回滚完整才删快照；回读校验同样覆盖两张表。
+- **界面文案**（`AutoLoginNet.App\Pages\NetworkPage.xaml`、`NetworkToolsViewModel.cs`）
+  改成「同时改两处 IPv4 跃点」，并说明默认路由改动只保留到下次重启。
+- **验证**：计划器新增 13 个路由/快照用例（含「重复 apply 保留最早原值」），
+  服务层用假 netsh 内存表覆盖成功、失败回滚、恢复、旧快照、首选无路由等场景；
+  真机复测用 `Find-NetRoute` 确认 `InterfaceAlias` 从 WLAN 翻到以太网 2。
+
 ## 2026-10-17 — 上网网卡真正生效：改系统 IPv4 跃点
 
 **以前「上网网卡」只是程序自己按名字选路，系统并不知情；现在它能真的改系统首选，而且改得动也退得回。**

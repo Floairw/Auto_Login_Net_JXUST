@@ -1,22 +1,31 @@
 using AutoLoginNet.Diagnostics;
 using AutoLoginNet.Windows;
 using System.Globalization;
+using System.Net;
+using System.Net.Sockets;
 using System.Text.RegularExpressions;
 
 namespace AutoLoginNet.Network;
 
 /// <summary>
-/// 基于 <c>netsh</c> 的接口跃点（metric）读写实现。
+/// 基于 <c>netsh</c> 的接口跃点（metric）与 IPv4 默认路由跃点读写实现。
 /// <para>
-/// 与 DNS 服务同样的两个关键取舍：
-/// 1) 网卡只用 <b>名称</b> 定位：<c>netsh interface ipv4 set interface</c> 接受位置参数形式的
-///    接口名（含空格、括号），名称单独作为一个 argv 传入由 .NET 负责加引号，不手工拼命令行；
-/// 2) 写入后立即回读并逐张比对，只有真正生效才报告成功——跃点没改却报成功会让用户
-///    误以为系统已经切成那张网卡上网，属于比失败更危险的「假成功」。
+/// 为什么必须同时改<b>两套</b>跃点（真机实测证据）：
+/// 只改接口跃点时，以太网 2 的接口跃点已经变成 10、WLAN 变成 9000，但
+/// <c>Find-NetRoute 8.8.8.8</c> / <c>Test-NetConnection</c> 仍然走 WLAN——
+/// <c>Get-NetRoute 0.0.0.0/0</c> 显示 WLAN 的默认路由跃点是 0、以太网 2 的是 25，
+/// Windows 选路先比默认路由自身的跃点，再比接口跃点。所以必须用
+/// <c>netsh interface ipv4 set interface</c> 改接口跃点的同时，用
+/// <c>netsh interface ipv4 set route</c> 改默认路由（0.0.0.0/0）自身的跃点，
+/// 否则界面上「设置成功」但系统依旧走原来的网卡，属于最危险的假成功。
 /// </para>
 /// <para>
-/// 只改 IPv4 接口跃点（与 Core 的 <see cref="AdapterPriorityPlanner"/> 保持一致）：
-/// 校园网认证、DNS 都走 IPv4，动 IPv6 收益不明却可能影响双栈。
+/// 其余取舍：
+/// 1) 网卡与下一跳都只作为<b>单独一个 argv</b> 传入（名称可含空格、括号），由 .NET 负责加引号，不手工拼命令行；
+/// 2) 写入后立即回读并逐项比对（接口一套、路由一套），只有真正生效才报告成功；
+/// 3) 路由跃点用 <c>store=active</c> 写入：只改当前运行配置、不写持久化注册表，重启后由 DHCP 重新生成默认路由，
+///    不会在系统里留下难清理的改动，与「可随时恢复」的定位一致；
+/// 4) 只改 IPv4：校园网认证、DNS 与绝大多数校园服务都走 IPv4，动 IPv6 收益不明却可能影响双栈。
 /// </para>
 /// </summary>
 public sealed partial class WindowsAdapterPriorityService : IAdapterPriorityService
@@ -31,6 +40,12 @@ public sealed partial class WindowsAdapterPriorityService : IAdapterPriorityServ
     /// </para>
     /// </summary>
     internal const int MissingIpv6Metric = -1;
+
+    /// <summary>
+    /// IPv4 默认路由的前缀。只有它代表「从这张网卡出去上网」；
+    /// 同网段、组播、回环等其它前缀都是内部路由，不在本功能职责内。
+    /// </summary>
+    internal const string DefaultRoutePrefix = "0.0.0.0/0";
 
     /// <summary>netsh 可执行文件名（Windows 自带，位于 System32，无需完整路径）。</summary>
     private const string NetshFileName = "netsh.exe";
@@ -119,11 +134,137 @@ public sealed partial class WindowsAdapterPriorityService : IAdapterPriorityServ
         return states;
     }
 
+    /// <summary>
+    /// 读取系统当前的 IPv4 默认路由（0.0.0.0/0）。
+    /// <para>
+    /// <c>netsh interface ipv4 show route</c> 的 Idx 列是接口索引，没有接口名，
+    /// 因此还要再读一次 <c>show interfaces</c> 把 Idx 映射成名称（后续 set route 需要名称）。
+    /// 这里只做只读查询，不改 <see cref="ReadStateAsync"/> 的对外语义。
+    /// </para>
+    /// <para>
+    /// 过滤规则：只保留默认前缀；网关列必须是 IPv4 地址（On-link、接口名之类无法用 set route 定位）；
+    /// 回环接口的路由不参与上网选路，直接跳过。
+    /// </para>
+    /// </summary>
+    internal async Task<IReadOnlyList<AdapterRouteState>> ReadRoutesAsync(CancellationToken cancellationToken = default)
+    {
+        ProcessOutcome routesShow = await _runAsync(
+            NetshFileName,
+            new[] { "interface", "ipv4", "show", "route" },
+            cancellationToken).ConfigureAwait(false);
+
+        if (!routesShow.Succeeded)
+        {
+            _log.Error($"读取系统 IPv4 默认路由失败：{FirstLine(routesShow.StdErr)}", LogCategory);
+            return Array.Empty<AdapterRouteState>();
+        }
+
+        IReadOnlyList<NetshRouteRow> rows = ParseRouteTable(routesShow.StdOut);
+        if (rows.Count == 0)
+        {
+            _log.Warn("没有从 netsh 输出里解析到 IPv4 默认路由（0.0.0.0/0）", LogCategory);
+            return Array.Empty<AdapterRouteState>();
+        }
+
+        ProcessOutcome interfaces = await _runAsync(
+            NetshFileName,
+            new[] { "interface", "ipv4", "show", "interfaces" },
+            cancellationToken).ConfigureAwait(false);
+
+        if (!interfaces.Succeeded)
+        {
+            _log.Error($"读取网卡接口表失败，无法确定默认路由属于哪张网卡：{FirstLine(interfaces.StdErr)}", LogCategory);
+            return Array.Empty<AdapterRouteState>();
+        }
+
+        var names = new Dictionary<int, string>();
+        foreach (NetshInterfaceRow row in ParseInterfaceTable(interfaces.StdOut))
+        {
+            names[row.Index] = row.Name;
+        }
+
+        var result = new List<AdapterRouteState>(rows.Count);
+        foreach (NetshRouteRow row in rows)
+        {
+            if (!names.TryGetValue(row.Index, out string? name))
+            {
+                _log.Warn($"默认路由（网关 {row.Gateway}）的接口 Idx {row.Index} 不在接口表里，已跳过", LogCategory);
+                continue;
+            }
+
+            if (IsLoopbackAdapter(name))
+            {
+                continue;
+            }
+
+            result.Add(new AdapterRouteState(name, row.Gateway, row.Metric));
+        }
+
+        if (result.Count == 0)
+        {
+            _log.Warn("解析到默认路由，但没有可用的上网接口（网关不是 IPv4 或属于回环接口）", LogCategory);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// 只保留「当前已连接」网卡的默认路由。
+    /// <para>
+    /// 原因（真机验证）：断开网卡上的持久默认路由同样出现在 netsh show route 里，
+    /// 但在断开接口上执行 netsh set route 并不可靠，可能直接报错；一旦报错按现有流程会整单回滚，
+    /// 用户点了「设为系统首选网卡」等于没效果。断开网卡不写也不会抢路：
+    /// 选路按「路由跃点 + 接口跃点」，它两者的和仍明显大于首选网卡。
+    /// </para>
+    /// <para>
+    /// 快照仍记录全部路由（含断开网卡的），不丢信息；只是不往系统里写。
+    /// </para>
+    /// </summary>
+    private IReadOnlyList<AdapterRouteState> FilterConnectedRoutes(
+        IReadOnlyList<AdapterRouteState> routes,
+        IReadOnlyList<AdapterMetricState> states)
+    {
+        var connected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (AdapterMetricState state in states)
+        {
+            if (state.Connected)
+            {
+                connected.Add(state.Name);
+            }
+        }
+
+        var writable = new List<AdapterRouteState>(routes.Count);
+        int skipped = 0;
+        foreach (AdapterRouteState route in routes)
+        {
+            if (connected.Contains(route.AdapterName))
+            {
+                writable.Add(route);
+            }
+            else
+            {
+                skipped++;
+            }
+        }
+
+        if (skipped > 0)
+        {
+            _log.Info($"跳过 {skipped} 条断开网卡的默认路由（只在已连接网卡上改路由跃点）", LogCategory);
+        }
+
+        return writable;
+    }
+
     /// <inheritdoc />
     public async Task<AdapterPriorityOutcome> ApplyPreferredAsync(
         string preferredName,
         CancellationToken cancellationToken = default)
     {
+        if (string.IsNullOrWhiteSpace(preferredName))
+        {
+            return FailApply("没有指定上网网卡");
+        }
+
         IReadOnlyList<AdapterMetricState> states = await ReadStateAsync(cancellationToken).ConfigureAwait(false);
         if (states.Count == 0)
         {
@@ -137,6 +278,9 @@ public sealed partial class WindowsAdapterPriorityService : IAdapterPriorityServ
             return FailApply($"「{preferredName}」是回环接口，不能作为上网网卡");
         }
 
+        // 路由必须一起读：只改接口跃点不足以保证系统真的从首选网卡上网（见类摘要的真机证据）。
+        IReadOnlyList<AdapterRouteState> routes = await ReadRoutesAsync(cancellationToken).ConfigureAwait(false);
+
         // 计划只看「可调整」的网卡，但快照仍记全部网卡：恢复时按记录比对，回环值没变就不会被写
         AdapterMetricState[] editable = states.Where(state => !IsLoopbackAdapter(state.Name)).ToArray();
         AdapterPriorityPlan plan = AdapterPriorityPlanner.CreateApplyPlan(editable, preferredName);
@@ -145,52 +289,96 @@ public sealed partial class WindowsAdapterPriorityService : IAdapterPriorityServ
             return FailApply(plan.Error!);
         }
 
-        if (!plan.CanApply)
+        // 路由只改「当前已连接」网卡的：断开网卡上的持久默认路由不写，否则 set route 报错会整单回滚。
+        IReadOnlyList<AdapterRouteState> writableRoutes = FilterConnectedRoutes(routes, states);
+        AdapterRoutePlan routePlan = AdapterPriorityPlanner.CreateRouteApplyPlan(writableRoutes, preferredName);
+        if (routePlan.HasError)
         {
-            // 值已经正确就不写系统：既避免无谓写入，也避免把「本来就对」误报成一次修改。
-            string message = $"「{plan.PreferredName}」的 IPv4 跃点已是目标值 {AdapterPriorityPlanner.PreferredMetric}，无需修改";
+            return FailApply(routePlan.Error!);
+        }
+
+        if (!plan.CanApply && !routePlan.CanApply)
+        {
+            // 两套跃点都已经正确就不写系统：既避免无谓写入，也避免把「本来就对」误报成一次修改。
+            string message =
+                $"「{plan.PreferredName}」的接口跃点与默认路由跃点都已是目标值" +
+                $"（接口 {AdapterPriorityPlanner.PreferredMetric}、默认路由 {AdapterPriorityPlanner.PreferredRouteMetric}），无需修改";
             _log.Info(message, LogCategory);
             return AdapterPriorityOutcome.Done(message);
         }
 
         // 先落盘恢复记录，再动系统：万一进程在改到一半时崩溃/被杀，用户仍能一键恢复。
-        if (!TrySaveSnapshot(new AdapterPrioritySnapshot(plan.PreferredName, states.ToArray(), DateTimeOffset.Now), out string? saveError))
+        // 用 CreateSnapshot 合并旧记录：用户可能已经 apply 过还没恢复，重复点击必须保留最早的原值，
+        // 否则恢复只能回到「上一次改后的值」，回不到真正的原值。
+        AdapterPrioritySnapshot? previous = _store.Load();
+        AdapterPrioritySnapshot snapshot = AdapterPriorityPlanner.CreateSnapshot(
+            plan.PreferredName,
+            states.ToArray(),
+            routes.ToArray(),
+            previous,
+            DateTimeOffset.Now);
+
+        if (!TrySaveSnapshot(snapshot, out string? saveError))
         {
             return FailApply($"写入恢复记录失败，已取消修改：{saveError}");
         }
 
-        var applied = new List<AdapterMetricChange>(plan.Changes.Length);
+        var appliedInterfaces = new List<AdapterMetricChange>(plan.Changes.Length);
+        var appliedRoutes = new List<AdapterRouteChange>(routePlan.Changes.Length);
         try
         {
+            // 先接口、后路由：接口命令失败时系统还没被路由改动，需要回滚的面更小。
             foreach (AdapterMetricChange change in plan.Changes)
             {
                 if (!await TrySetMetricAsync(change.Name, change.Ipv4Target, cancellationToken).ConfigureAwait(false))
                 {
                     return await FailApplyWithRollbackAsync(
-                        $"设置「{change.Name}」跃点为 {change.Ipv4Target} 失败",
-                        applied).ConfigureAwait(false);
+                        $"设置「{change.Name}」接口跃点为 {change.Ipv4Target} 失败",
+                        appliedInterfaces,
+                        appliedRoutes).ConfigureAwait(false);
                 }
 
-                applied.Add(change);
+                appliedInterfaces.Add(change);
             }
 
-            string? mismatch = await FindMismatchAsync(applied, cancellationToken).ConfigureAwait(false);
+            string? mismatch = await FindMismatchAsync(appliedInterfaces, cancellationToken).ConfigureAwait(false);
             if (mismatch is not null)
             {
-                return await FailApplyWithRollbackAsync(mismatch, applied).ConfigureAwait(false);
+                return await FailApplyWithRollbackAsync(mismatch, appliedInterfaces, appliedRoutes).ConfigureAwait(false);
+            }
+
+            foreach (AdapterRouteChange change in routePlan.Changes)
+            {
+                if (!await TrySetRouteMetricAsync(change, cancellationToken).ConfigureAwait(false))
+                {
+                    return await FailApplyWithRollbackAsync(
+                        $"设置「{change.AdapterName}」默认路由（网关 {change.NextHop}）跃点为 {change.TargetMetric} 失败",
+                        appliedInterfaces,
+                        appliedRoutes).ConfigureAwait(false);
+                }
+
+                appliedRoutes.Add(change);
+            }
+
+            string? routeMismatch = await FindRouteMismatchAsync(appliedRoutes, cancellationToken).ConfigureAwait(false);
+            if (routeMismatch is not null)
+            {
+                return await FailApplyWithRollbackAsync(routeMismatch, appliedInterfaces, appliedRoutes).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
         {
-            // 取消也先把已改的网卡改回去，别把系统留在「一半网卡改过」的状态；
+            // 取消也先把已改的项改回去，别把系统留在「一半改过」的状态；
             // 回滚本身不能再被取消，否则可能永久改坏用户网络。
-            await RollbackAsync(applied).ConfigureAwait(false);
+            await RollbackAsync(appliedInterfaces, appliedRoutes).ConfigureAwait(false);
             throw;
         }
 
         string done =
-            $"已将「{plan.PreferredName}」设为系统首选网卡：该网卡 IPv4 跃点 {AdapterPriorityPlanner.PreferredMetric}，" +
-            $"其余已连接网卡跃点 {AdapterPriorityPlanner.SecondaryMetric}，共调整 {plan.Changes.Length} 张网卡（可随时恢复）";
+            $"已将「{plan.PreferredName}」设为系统首选网卡：接口跃点 {AdapterPriorityPlanner.PreferredMetric}、" +
+            $"默认路由跃点 {AdapterPriorityPlanner.PreferredRouteMetric}；其余网卡接口跃点 {AdapterPriorityPlanner.SecondaryMetric}、" +
+            $"默认路由跃点 {AdapterPriorityPlanner.SecondaryRouteMetric}，" +
+            $"共调整 {plan.Changes.Length} 张网卡、{routePlan.Changes.Length} 条默认路由（可随时恢复）";
         _log.Info(done, LogCategory);
         return AdapterPriorityOutcome.Done(done, plan.Changes);
     }
@@ -214,6 +402,17 @@ public sealed partial class WindowsAdapterPriorityService : IAdapterPriorityServ
             return AdapterPriorityOutcome.Failure(message);
         }
 
+        IReadOnlyList<AdapterRouteState> routes = await ReadRoutesAsync(cancellationToken).ConfigureAwait(false);
+
+        // 新版本记录里含默认路由：读不到路由就无法恢复它们，此时必须报错，
+        // 否则会「恢复成功并删掉记录」，而路由仍停在 0/9000，用户永远回不到原状态。
+        if (snapshot.RoutesOrEmpty.Length > 0 && routes.Count == 0)
+        {
+            string message = "读取系统默认路由失败，无法恢复原默认路由跃点（可尝试以管理员身份运行）";
+            _log.Error(message, LogCategory);
+            return AdapterPriorityOutcome.Failure(message);
+        }
+
         AdapterPriorityPlan plan = AdapterPriorityPlanner.CreateRestorePlan(states, snapshot);
         if (plan.HasError)
         {
@@ -221,16 +420,23 @@ public sealed partial class WindowsAdapterPriorityService : IAdapterPriorityServ
             return AdapterPriorityOutcome.Failure(plan.Error!);
         }
 
-        if (plan.Changes.Length == 0)
+        // 旧版本快照没有路由记录（RoutesOrEmpty 为空）时得到空计划：只恢复接口跃点，不报错。
+        // 恢复同样只写「当前已连接」网卡的路由：断开网卡写路由不可靠；路由是 store=active，
+        // 重启后由系统/DHCP 重新生成，不会留下脏数据。
+        IReadOnlyList<AdapterRouteState> writableRoutes = FilterConnectedRoutes(routes, states);
+        AdapterRoutePlan routePlan = AdapterPriorityPlanner.CreateRouteRestorePlan(writableRoutes, snapshot);
+
+        if (plan.Changes.Length == 0 && routePlan.Changes.Length == 0)
         {
             // 记录里的值已经都对上了，说明用户或系统已经手动恢复过；清掉记录即可，不再写系统。
             _store.Delete();
-            string message = "各网卡跃点已与恢复记录一致，无需修改（已清除恢复记录）";
+            string message = "各网卡的接口跃点与默认路由跃点已与恢复记录一致，无需修改（已清除恢复记录）";
             _log.Info(message, LogCategory);
             return AdapterPriorityOutcome.Done(message);
         }
 
-        var applied = new List<AdapterMetricChange>(plan.Changes.Length);
+        var appliedInterfaces = new List<AdapterMetricChange>(plan.Changes.Length);
+        var appliedRoutes = new List<AdapterRouteChange>(routePlan.Changes.Length);
         try
         {
             foreach (AdapterMetricChange change in plan.Changes)
@@ -238,29 +444,53 @@ public sealed partial class WindowsAdapterPriorityService : IAdapterPriorityServ
                 if (!await TrySetMetricAsync(change.Name, change.Ipv4Target, cancellationToken).ConfigureAwait(false))
                 {
                     return await FailRestoreWithRollbackAsync(
-                        $"恢复「{change.Name}」跃点为 {change.Ipv4Target} 失败",
-                        applied).ConfigureAwait(false);
+                        $"恢复「{change.Name}」接口跃点为 {change.Ipv4Target} 失败",
+                        appliedInterfaces,
+                        appliedRoutes).ConfigureAwait(false);
                 }
 
-                applied.Add(change);
+                appliedInterfaces.Add(change);
             }
 
-            string? mismatch = await FindMismatchAsync(applied, cancellationToken).ConfigureAwait(false);
+            string? mismatch = await FindMismatchAsync(appliedInterfaces, cancellationToken).ConfigureAwait(false);
             if (mismatch is not null)
             {
-                return await FailRestoreWithRollbackAsync(mismatch, applied).ConfigureAwait(false);
+                return await FailRestoreWithRollbackAsync(mismatch, appliedInterfaces, appliedRoutes).ConfigureAwait(false);
+            }
+
+            foreach (AdapterRouteChange change in routePlan.Changes)
+            {
+                if (!await TrySetRouteMetricAsync(change, cancellationToken).ConfigureAwait(false))
+                {
+                    return await FailRestoreWithRollbackAsync(
+                        $"恢复「{change.AdapterName}」默认路由（网关 {change.NextHop}）跃点为 {change.TargetMetric} 失败",
+                        appliedInterfaces,
+                        appliedRoutes).ConfigureAwait(false);
+                }
+
+                appliedRoutes.Add(change);
+            }
+
+            string? routeMismatch = await FindRouteMismatchAsync(appliedRoutes, cancellationToken).ConfigureAwait(false);
+            if (routeMismatch is not null)
+            {
+                return await FailRestoreWithRollbackAsync(routeMismatch, appliedInterfaces, appliedRoutes).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
         {
-            await RollbackAsync(applied).ConfigureAwait(false);
+            await RollbackAsync(appliedInterfaces, appliedRoutes).ConfigureAwait(false);
             throw;
         }
 
         // 只有全部恢复并回读通过才删除记录：失败时保留，用户重试或手动处理都还有依据。
         _store.Delete();
+        string routeText = routePlan.Changes.Length == 0
+            ? string.Empty
+            : $"、{routePlan.Changes.Length} 条默认路由跃点";
         string done =
-            $"已恢复 {plan.Changes.Length} 张网卡的原始 IPv4 跃点（首选网卡「{snapshot.PreferredName}」），系统恢复自动选路";
+            $"已恢复 {plan.Changes.Length} 张网卡的原始 IPv4 跃点{routeText}" +
+            $"（首选网卡「{snapshot.PreferredName}」），系统恢复自动选路";
         _log.Info(done, LogCategory);
         return AdapterPriorityOutcome.Done(done, plan.Changes);
     }
@@ -277,6 +507,7 @@ public sealed partial class WindowsAdapterPriorityService : IAdapterPriorityServ
     /// </code>
     /// 表头行以字母开头、分隔行以 '-' 开头，都不会被「行首数字」规则匹配到；
     /// 名称列可能含空格和括号，所以只按前四列定位，其余整段都是名称。
+    /// Idx 也要解析出来：默认路由只带接口索引，必须靠它映射到接口名称。
     /// </para>
     /// </summary>
     internal static IReadOnlyList<NetshInterfaceRow> ParseInterfaceTable(string output)
@@ -295,6 +526,11 @@ public sealed partial class WindowsAdapterPriorityService : IAdapterPriorityServ
                 continue;
             }
 
+            if (!int.TryParse(match.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int index))
+            {
+                continue;
+            }
+
             if (!int.TryParse(match.Groups[2].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int metric))
             {
                 continue;
@@ -307,7 +543,69 @@ public sealed partial class WindowsAdapterPriorityService : IAdapterPriorityServ
                 continue;
             }
 
-            rows.Add(new NetshInterfaceRow(name, metric, IsConnectedState(state)));
+            rows.Add(new NetshInterfaceRow(name, metric, IsConnectedState(state), index));
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// 解析 <c>netsh interface ipv4 show route</c> 的表格，只返回 IPv4 默认路由（0.0.0.0/0）。
+    /// <para>
+    /// 真实输出形如（列：Publish Type Met Prefix Idx Gateway/Interface Name）：
+    /// <code>
+    /// No       Manual    0    0.0.0.0/0                   9  10.48.164.237
+    /// No       Manual    25   0.0.0.0/0                  60  以太网 2
+    /// No       System    256  10.31.126.0/24             60  以太网 2
+    /// </code>
+    /// 行首是 Publish（No/Yes/Age），第二列 Type 是单词，第三列 Met、第四列 Prefix、
+    /// 第五列 Idx，其余整段是网关或接口名。
+    /// </para>
+    /// <para>
+    /// 网关不是 IPv4 地址的行（On-link，或网关列写接口名）无法用
+    /// <c>netsh set route</c> 的「接口 + 下一跳」定位，直接跳过；其它前缀都是内部路由，不碰。
+    /// </para>
+    /// </summary>
+    internal static IReadOnlyList<NetshRouteRow> ParseRouteTable(string output)
+    {
+        var rows = new List<NetshRouteRow>();
+        if (string.IsNullOrWhiteSpace(output))
+        {
+            return rows;
+        }
+
+        foreach (string line in output.Split('\n'))
+        {
+            Match match = RouteRowRegex().Match(line);
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            // 组 2 是 Prefix：只关心默认路由，其它前缀改了会破坏本机网络。
+            if (!string.Equals(match.Groups[2].Value, DefaultRoutePrefix, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (!int.TryParse(match.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int metric))
+            {
+                continue;
+            }
+
+            if (!int.TryParse(match.Groups[3].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int index))
+            {
+                continue;
+            }
+
+            string gateway = match.Groups[4].Value.Trim();
+            if (!IPAddress.TryParse(gateway, out IPAddress? address)
+                || address.AddressFamily != AddressFamily.InterNetwork)
+            {
+                continue;
+            }
+
+            rows.Add(new NetshRouteRow(index, gateway, metric));
         }
 
         return rows;
@@ -316,8 +614,12 @@ public sealed partial class WindowsAdapterPriorityService : IAdapterPriorityServ
     /// <summary>
     /// 解析出的一行接口信息。IPv4 表给出 IPv4 跃点，IPv6 表给出 IPv6 跃点；
     /// 两张表共用同一套列布局，因此共用这个解析器。
+    /// <paramref name="Index"/> 是 Idx 列，用来把默认路由的接口索引映射成名称。
     /// </summary>
-    internal readonly record struct NetshInterfaceRow(string Name, int Metric, bool Connected);
+    internal readonly record struct NetshInterfaceRow(string Name, int Metric, bool Connected, int Index);
+
+    /// <summary>解析出的一行 IPv4 默认路由：接口索引 + 下一跳网关 + 路由自身跃点。</summary>
+    internal readonly record struct NetshRouteRow(int Index, string Gateway, int Metric);
 
     /// <summary>
     /// 数据行：Idx、Met、MTU 三列数字 + 状态（单个词）+ 名称（可含空格）。
@@ -325,6 +627,15 @@ public sealed partial class WindowsAdapterPriorityService : IAdapterPriorityServ
     /// </summary>
     [GeneratedRegex(@"^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.+?)\s*$", RegexOptions.CultureInvariant)]
     private static partial Regex InterfaceRowRegex();
+
+    /// <summary>
+    /// 路由数据行：Publish（No/Yes/Age）+ Type 单词 + Met + Prefix + Idx + 网关/接口名。
+    /// 表头（Publish 开头）与虚线行都不满足「第一个词是 No/Yes/Age」，天然被过滤。
+    /// </summary>
+    [GeneratedRegex(
+        @"^\s*(?:No|Yes|Age)\s+\w+\s+(\d+)\s+(\S+/\d+)\s+(\d+)\s+(.+?)\s*$",
+        RegexOptions.CultureInvariant | RegexOptions.IgnoreCase)]
+    private static partial Regex RouteRowRegex();
 
     /// <summary>
     /// 状态列判定：英文 connected / 中文 已连接 视为已连接，其余（disconnected、已断开…）视为断开。
@@ -335,9 +646,10 @@ public sealed partial class WindowsAdapterPriorityService : IAdapterPriorityServ
     /// 本地化名称不保证统一，因此英文关键字与中文关键字都按「包含」匹配。
     /// </summary>
     private static bool IsLoopbackAdapter(string name)
-        => name.Contains("Loopback", StringComparison.OrdinalIgnoreCase)
-            || name.Contains("Pseudo-Interface", StringComparison.OrdinalIgnoreCase)
-            || name.Contains("回环", StringComparison.Ordinal);
+        => !string.IsNullOrEmpty(name)
+            && (name.Contains("Loopback", StringComparison.OrdinalIgnoreCase)
+                || name.Contains("Pseudo-Interface", StringComparison.OrdinalIgnoreCase)
+                || name.Contains("回环", StringComparison.Ordinal));
 
     private static bool IsConnectedState(string state)
         => state.Equals("connected", StringComparison.OrdinalIgnoreCase)
@@ -355,6 +667,56 @@ public sealed partial class WindowsAdapterPriorityService : IAdapterPriorityServ
         {
             _log.Warn(
                 $"netsh 设置「{adapterName}」跃点为 {metric} 失败：{FirstLine(outcome.StdErr)}",
+                LogCategory);
+        }
+
+        return outcome.Succeeded;
+    }
+
+    /// <summary>
+    /// 执行一条改默认路由跃点的命令：
+    /// <c>netsh interface ipv4 set route 0.0.0.0/0 &lt;接口名&gt; &lt;下一跳&gt; metric=&lt;n&gt; store=active</c>。
+    /// <para>
+    /// 接口名、下一跳各自作为一个 argv，含空格/括号的名字由 .NET 负责加引号。
+    /// <c>store=active</c> 只改当前运行配置、不写注册表持久化，重启即由 DHCP 重新生成，便于彻底还原。
+    /// </para>
+    /// </summary>
+    internal async Task<bool> TrySetRouteMetricAsync(AdapterRouteChange change, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(change);
+        return await TrySetRouteMetricAsync(
+            change.AdapterName,
+            change.NextHop,
+            change.TargetMetric,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<bool> TrySetRouteMetricAsync(
+        string adapterName,
+        string nextHop,
+        int metric,
+        CancellationToken cancellationToken)
+    {
+        ProcessOutcome outcome = await _runAsync(
+            NetshFileName,
+            new[]
+            {
+                "interface",
+                "ipv4",
+                "set",
+                "route",
+                DefaultRoutePrefix,
+                adapterName,
+                nextHop,
+                $"metric={metric}",
+                "store=active",
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        if (!outcome.Succeeded)
+        {
+            _log.Warn(
+                $"netsh 设置「{adapterName}」默认路由（网关 {nextHop}）跃点为 {metric} 失败：{FirstLine(outcome.StdErr)}",
                 LogCategory);
         }
 
@@ -396,16 +758,65 @@ public sealed partial class WindowsAdapterPriorityService : IAdapterPriorityServ
     }
 
     /// <summary>
-    /// 回滚已执行的修改：倒序写回原值（后改的先回，像撤销栈）。
+    /// 默认路由的回读校验：按「接口名 + 下一跳」重新读取默认路由，每条改过的路由都必须等于目标值。
+    /// 只靠 netsh 退出码不够——组策略/驱动可能接受命令却不生效（假成功），必须回读确认。
+    /// </summary>
+    /// <returns>第一处不一致的说明；全部一致返回 null。</returns>
+    private async Task<string?> FindRouteMismatchAsync(
+        IReadOnlyList<AdapterRouteChange> applied,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyList<AdapterRouteState> routes = await ReadRoutesAsync(cancellationToken).ConfigureAwait(false);
+        if (routes.Count == 0)
+        {
+            return "设置后无法回读默认路由，无法确认是否生效";
+        }
+
+        foreach (AdapterRouteChange change in applied)
+        {
+            AdapterRouteState? actual = routes.FirstOrDefault(route =>
+                string.Equals(route.AdapterName, change.AdapterName, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(route.NextHop, change.NextHop, StringComparison.OrdinalIgnoreCase));
+
+            if (actual is null)
+            {
+                return $"回读时找不到「{change.AdapterName}」的默认路由（网关 {change.NextHop}），无法确认是否生效";
+            }
+
+            if (actual.Metric != change.TargetMetric)
+            {
+                return $"「{change.AdapterName}」默认路由跃点未生效：期望 {change.TargetMetric}，实际 {actual.Metric}";
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 回滚已执行的修改：先倒序回滚默认路由、再倒序回滚接口跃点（后改的先回，像撤销栈；
+    /// 接口与路由是两套独立设置，路由是最后改的，所以先撤路由）。
     /// 回滚用 <see cref="CancellationToken.None"/>：即使外部已取消也必须尽力改回去。
     /// </summary>
     /// <returns>全部回滚命令都成功时为 true。</returns>
-    private async Task<bool> RollbackAsync(IReadOnlyList<AdapterMetricChange> applied)
+    private async Task<bool> RollbackAsync(
+        IReadOnlyList<AdapterMetricChange> appliedInterfaces,
+        IReadOnlyList<AdapterRouteChange> appliedRoutes)
     {
         bool allSucceeded = true;
-        for (int i = applied.Count - 1; i >= 0; i--)
+
+        for (int i = appliedRoutes.Count - 1; i >= 0; i--)
         {
-            AdapterMetricChange change = applied[i];
+            AdapterRouteChange change = appliedRoutes[i];
+            if (!await TrySetRouteMetricAsync(change.AdapterName, change.NextHop, change.OriginalMetric, CancellationToken.None)
+                .ConfigureAwait(false))
+            {
+                allSucceeded = false;
+            }
+        }
+
+        for (int i = appliedInterfaces.Count - 1; i >= 0; i--)
+        {
+            AdapterMetricChange change = appliedInterfaces[i];
             if (!await TrySetMetricAsync(change.Name, change.Ipv4Original, CancellationToken.None).ConfigureAwait(false))
             {
                 allSucceeded = false;
@@ -415,12 +826,13 @@ public sealed partial class WindowsAdapterPriorityService : IAdapterPriorityServ
         return allSucceeded;
     }
 
-    /// <summary>应用失败后的收尾：尽力回滚；回滚完整才删除恢复记录，否则保留供用户重试。</summary>
+    /// <summary>应用失败后的收尾：尽力回滚接口与路由；回滚完整才删除恢复记录，否则保留供用户重试。</summary>
     private async Task<AdapterPriorityOutcome> FailApplyWithRollbackAsync(
         string reason,
-        IReadOnlyList<AdapterMetricChange> applied)
+        IReadOnlyList<AdapterMetricChange> appliedInterfaces,
+        IReadOnlyList<AdapterRouteChange> appliedRoutes)
     {
-        bool rolledBack = await RollbackAsync(applied).ConfigureAwait(false);
+        bool rolledBack = await RollbackAsync(appliedInterfaces, appliedRoutes).ConfigureAwait(false);
         if (rolledBack)
         {
             _store.Delete();
@@ -428,20 +840,21 @@ public sealed partial class WindowsAdapterPriorityService : IAdapterPriorityServ
 
         string message = rolledBack
             ? $"设置系统首选网卡失败：{reason}；已回滚到修改前的跃点"
-            : $"设置系统首选网卡失败：{reason}；部分网卡回滚失败，已保留恢复记录，可用「恢复系统自动跃点」重试";
+            : $"设置系统首选网卡失败：{reason}；部分网卡或默认路由回滚失败，已保留恢复记录，可用「恢复系统自动跃点」重试";
         _log.Error(message, LogCategory);
         return AdapterPriorityOutcome.Failure(message);
     }
 
-    /// <summary>恢复失败后的收尾：回滚本次已恢复的网卡，但<b>保留</b>快照供重试。</summary>
+    /// <summary>恢复失败后的收尾：回滚本次已恢复的接口与路由，但<b>保留</b>快照供重试。</summary>
     private async Task<AdapterPriorityOutcome> FailRestoreWithRollbackAsync(
         string reason,
-        IReadOnlyList<AdapterMetricChange> applied)
+        IReadOnlyList<AdapterMetricChange> appliedInterfaces,
+        IReadOnlyList<AdapterRouteChange> appliedRoutes)
     {
-        bool rolledBack = await RollbackAsync(applied).ConfigureAwait(false);
+        bool rolledBack = await RollbackAsync(appliedInterfaces, appliedRoutes).ConfigureAwait(false);
         string message = rolledBack
-            ? $"恢复系统自动跃点失败：{reason}；已回滚本次已恢复的网卡，恢复记录保留，可重试"
-            : $"恢复系统自动跃点失败：{reason}；部分网卡回滚失败，恢复记录保留，请重试";
+            ? $"恢复系统自动跃点失败：{reason}；已回滚本次已恢复的网卡与默认路由，恢复记录保留，可重试"
+            : $"恢复系统自动跃点失败：{reason}；部分网卡或默认路由回滚失败，恢复记录保留，请重试";
         _log.Error(message, LogCategory);
         return AdapterPriorityOutcome.Failure(message);
     }

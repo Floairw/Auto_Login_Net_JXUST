@@ -453,10 +453,15 @@ public sealed class NetworkToolsViewModel : ObservableObject
         return result;
     }
 
-    // ---------------- 系统首选网卡（IPv4 接口跃点） ----------------
+    // ---------------- 系统首选网卡（IPv4 接口跃点 + 默认路由跃点） ----------------
 
     /// <summary>
-    /// 把当前上网网卡设为系统首选：该网卡 IPv4 跃点改为 10，其余已连接网卡改为 9000。
+    /// 把当前上网网卡设为系统首选：该网卡 IPv4 接口跃点改为 10、默认路由跃点改为 0，
+    /// 其余网卡的接口跃点与其默认路由跃点都改为 9000。
+    /// <para>
+    /// 只改接口跃点是不够的：这台机器的默认路由带着显式跃点（WLAN 0、以太网 2 25），
+    /// 路由选择按路由自身跃点走，所以必须连默认路由一起改，选路才会真的翻到首选网卡。
+    /// </para>
     /// <para>
     /// 已提权时直接改；否则走提权子进程 + 结果文件——与 DNS 同样的模式，
     /// 因为改跃点同样需要管理员权限，且界面必须拿到真实结论而不是停在「已请求授权」。
@@ -491,7 +496,7 @@ public sealed class NetworkToolsViewModel : ObservableObject
     {
         if (!_services.AdapterPriority.HasSnapshot)
         {
-            AdapterPriorityStatus = "没有可恢复的跃点记录，系统当前按默认跃点选路。";
+            AdapterPriorityStatus = "没有可恢复的跃点记录（接口跃点与默认路由跃点），系统当前按默认跃点选路。";
             OnPropertiesChanged(nameof(CanRestoreAdapterPriority));
             return;
         }

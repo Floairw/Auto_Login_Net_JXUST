@@ -56,7 +56,7 @@
                     </StackPanel>
 
                     <!--
-                        系统首选网卡：通过修改 IPv4 接口跃点让选定网卡真正优先选路。
+                        系统首选网卡：同时改 IPv4 接口跃点与 IPv4 默认路由跃点，让选定网卡真正优先选路。
                         不禁用其它网卡，因此随时可以一键恢复；两操作都需要管理员权限。
                     -->
                     <StackPanel Spacing="8">
@@ -75,7 +75,7 @@
                             Style="{StaticResource CaptionTextStyle}"
                             TextWrapping="Wrap" />
                         <TextBlock
-                            Text="只改 IPv4 接口跃点：选定网卡 10、其余已连接网卡 9000；不禁用网卡。修改会改变系统选路，需要管理员权限（会弹出 UAC），可随时用「恢复系统自动跃点」还原。"
+                            Text="同时改两处 IPv4 跃点：选定网卡的接口跃点 10、默认路由跃点 0，其余网卡的接口跃点与默认路由跃点都抬到 9000；不禁用任何网卡。默认路由的改动只保留到下次重启（重启后由系统重新生成）。修改会改变系统选路，需要管理员权限（会弹出 UAC），可随时用「恢复系统自动跃点」还原。"
                             Style="{StaticResource CaptionTextStyle}"
                             TextWrapping="Wrap" />
                     </StackPanel>

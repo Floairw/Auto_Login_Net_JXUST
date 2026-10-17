@@ -184,6 +184,214 @@ public sealed class AdapterPriorityPlannerTests
     }
 
     [TestMethod]
+    public void CreateRouteApplyPlan_PreferredRouteLowestOthersHigh()
+    {
+        var routes = new[]
+        {
+            new AdapterRouteState("WLAN", "10.48.164.237", 0),
+            new AdapterRouteState("以太网 2", "10.31.126.19", 25),
+            new AdapterRouteState("以太网", "10.22.128.1", 0),
+        };
+
+        AdapterRoutePlan plan = AdapterPriorityPlanner.CreateRouteApplyPlan(routes, "以太网 2");
+
+        Assert.IsFalse(plan.HasError);
+        Assert.IsTrue(plan.CanApply);
+        Assert.AreEqual(3, plan.Changes.Length);
+        Assert.AreEqual(AdapterPriorityPlanner.PreferredRouteMetric, plan.Changes.Single(c => c.AdapterName == "以太网 2").TargetMetric);
+        Assert.AreEqual(25, plan.Changes.Single(c => c.AdapterName == "以太网 2").OriginalMetric, "原值要留在 changes 里，回滚和快照都靠它");
+        Assert.AreEqual("10.31.126.19", plan.Changes.Single(c => c.AdapterName == "以太网 2").NextHop);
+        Assert.AreEqual(
+            AdapterPriorityPlanner.SecondaryRouteMetric,
+            plan.Changes.Single(c => c.AdapterName == "WLAN").TargetMetric);
+        Assert.AreEqual(
+            AdapterPriorityPlanner.SecondaryRouteMetric,
+            plan.Changes.Single(c => c.AdapterName == "以太网").TargetMetric,
+            "计划器不判断连接状态，只按传入的路由计算；断开网卡由平台层过滤后再传入");
+    }
+
+    [TestMethod]
+    public void CreateRouteApplyPlan_NoChangesWhenMetricsAlreadyTargets()
+    {
+        var routes = new[]
+        {
+            new AdapterRouteState("以太网 2", "10.31.126.19", AdapterPriorityPlanner.PreferredRouteMetric),
+            new AdapterRouteState("WLAN", "10.48.164.237", AdapterPriorityPlanner.SecondaryRouteMetric),
+        };
+
+        AdapterRoutePlan plan = AdapterPriorityPlanner.CreateRouteApplyPlan(routes, "以太网 2");
+
+        Assert.IsFalse(plan.HasError, "值已经正确不算错误");
+        Assert.AreEqual(0, plan.Changes.Length, "值已经正确不该产生系统写入");
+        Assert.IsFalse(plan.CanApply);
+    }
+
+    [TestMethod]
+    public void CreateRouteApplyPlan_PreferredWithoutDefaultRouteReportsError()
+    {
+        var routes = new[] { new AdapterRouteState("WLAN", "10.48.164.237", 0) };
+
+        AdapterRoutePlan plan = AdapterPriorityPlanner.CreateRouteApplyPlan(routes, "以太网 2");
+
+        Assert.IsTrue(plan.HasError);
+        Assert.AreEqual(0, plan.Changes.Length);
+        StringAssert.Contains(plan.Error!, "没有默认路由");
+    }
+
+    [TestMethod]
+    public void CreateRouteApplyPlan_EmptyRoutesReportsError()
+    {
+        AdapterRoutePlan plan = AdapterPriorityPlanner.CreateRouteApplyPlan(Array.Empty<AdapterRouteState>(), "以太网 2");
+
+        Assert.IsTrue(plan.HasError);
+        StringAssert.Contains(plan.Error!, "读取不到");
+    }
+
+    [TestMethod]
+    public void CreateRouteApplyPlan_BlankNameReportsError()
+    {
+        AdapterRoutePlan plan = AdapterPriorityPlanner.CreateRouteApplyPlan(
+            new[] { new AdapterRouteState("WLAN", "10.48.164.237", 0) },
+            " ");
+
+        Assert.IsTrue(plan.HasError);
+        StringAssert.Contains(plan.Error!, "没有指定");
+    }
+
+    [TestMethod]
+    public void CreateRouteRestorePlan_WritesBackRecordedMetrics()
+    {
+        var snapshot = new AdapterPrioritySnapshot(
+            "以太网 2",
+            new[] { Adapter("以太网 2", AdapterPriorityPlanner.PreferredMetric) },
+            DateTimeOffset.Now,
+            new[]
+            {
+                new AdapterRouteState("以太网 2", "10.31.126.19", 25),
+                new AdapterRouteState("WLAN", "10.48.164.237", 0),
+            });
+        var current = new[]
+        {
+            new AdapterRouteState("以太网 2", "10.31.126.19", AdapterPriorityPlanner.PreferredRouteMetric),
+            new AdapterRouteState("WLAN", "10.48.164.237", AdapterPriorityPlanner.SecondaryRouteMetric),
+        };
+
+        AdapterRoutePlan plan = AdapterPriorityPlanner.CreateRouteRestorePlan(current, snapshot);
+
+        Assert.IsFalse(plan.HasError);
+        Assert.AreEqual(2, plan.Changes.Length);
+        Assert.AreEqual(
+            new AdapterRouteChange("以太网 2", "10.31.126.19", AdapterPriorityPlanner.PreferredRouteMetric, 25),
+            plan.Changes.Single(c => c.AdapterName == "以太网 2"));
+        Assert.AreEqual(
+            new AdapterRouteChange("WLAN", "10.48.164.237", AdapterPriorityPlanner.SecondaryRouteMetric, 0),
+            plan.Changes.Single(c => c.AdapterName == "WLAN"));
+    }
+
+    [TestMethod]
+    public void CreateRouteRestorePlan_SkipsRoutesWithChangedGatewayOrGone()
+    {
+        var snapshot = new AdapterPrioritySnapshot(
+            "以太网 2",
+            new[] { Adapter("以太网 2", 10) },
+            DateTimeOffset.Now,
+            new[]
+            {
+                new AdapterRouteState("以太网 2", "10.31.126.19", 25),
+                new AdapterRouteState("旧网卡", "10.9.9.9", 0),
+            });
+        var current = new[]
+        {
+            // 同一张网卡换了网关：快照里的下一跳已不存在，不能硬写
+            new AdapterRouteState("以太网 2", "10.31.126.254", 0),
+        };
+
+        AdapterRoutePlan plan = AdapterPriorityPlanner.CreateRouteRestorePlan(current, snapshot);
+
+        Assert.IsFalse(plan.HasError, "路由消失/网关变化不算错误，能恢复几条是几条");
+        Assert.AreEqual(0, plan.Changes.Length);
+    }
+
+    [TestMethod]
+    public void CreateRouteRestorePlan_LegacySnapshotWithoutRoutesIsNoOp()
+    {
+        var legacy = new AdapterPrioritySnapshot(
+            "以太网 2",
+            new[] { Adapter("以太网 2", 25), Adapter("WLAN", 35) },
+            DateTimeOffset.Now);
+        var current = new[]
+        {
+            new AdapterRouteState("以太网 2", "10.31.126.19", 0),
+            new AdapterRouteState("WLAN", "10.48.164.237", 9000),
+        };
+
+        AdapterRoutePlan plan = AdapterPriorityPlanner.CreateRouteRestorePlan(current, legacy);
+
+        Assert.IsFalse(plan.HasError);
+        Assert.AreEqual(0, plan.Changes.Length, "旧版本快照没有路由记录，只恢复接口跃点即可");
+    }
+
+    [TestMethod]
+    public void CreateSnapshot_KeepsEarliestOriginalsAcrossRepeatedApply()
+    {
+        // 用户已经应用过一次（接口跃点 25/35 被改成 10/9000），但没恢复就再点一次：
+        // 新快照必须继续记 25/35，否则「恢复」只能回到 10/9000 这个中间状态。
+        var previous = new AdapterPrioritySnapshot(
+            "以太网 2",
+            new[] { Adapter("以太网 2", 25), Adapter("WLAN", 35) },
+            DateTimeOffset.Now,
+            new[]
+            {
+                new AdapterRouteState("以太网 2", "10.31.126.19", 25),
+                new AdapterRouteState("WLAN", "10.48.164.237", 0),
+            });
+        var currentStates = new[] { Adapter("以太网 2", 10), Adapter("WLAN", 9000) };
+        var currentRoutes = new[]
+        {
+            new AdapterRouteState("以太网 2", "10.31.126.19", 0),
+            new AdapterRouteState("WLAN", "10.48.164.237", 9000),
+        };
+
+        AdapterPrioritySnapshot snapshot = AdapterPriorityPlanner.CreateSnapshot(
+            "以太网 2", currentStates, currentRoutes, previous, DateTimeOffset.Now);
+
+        Assert.AreEqual(25, snapshot.Adapters.Single(a => a.Name == "以太网 2").Ipv4Metric);
+        Assert.AreEqual(35, snapshot.Adapters.Single(a => a.Name == "WLAN").Ipv4Metric);
+        Assert.AreEqual(25, snapshot.RoutesOrEmpty.Single(r => r.AdapterName == "以太网 2").Metric);
+        Assert.AreEqual(0, snapshot.RoutesOrEmpty.Single(r => r.AdapterName == "WLAN").Metric);
+    }
+
+    [TestMethod]
+    public void CreateSnapshot_WithoutPreviousRecordsCurrentValues()
+    {
+        var states = new[] { Adapter("以太网 2", 25), Adapter("WLAN", 35) };
+        var routes = new[] { new AdapterRouteState("以太网 2", "10.31.126.19", 25) };
+
+        AdapterPrioritySnapshot snapshot = AdapterPriorityPlanner.CreateSnapshot(
+            "以太网 2", states, routes, previous: null, DateTimeOffset.Now);
+
+        Assert.AreEqual(25, snapshot.Adapters.Single(a => a.Name == "以太网 2").Ipv4Metric);
+        Assert.AreEqual(35, snapshot.Adapters.Single(a => a.Name == "WLAN").Ipv4Metric);
+        Assert.AreEqual(25, snapshot.RoutesOrEmpty.Single().Metric);
+    }
+
+    [TestMethod]
+    public void CreateSnapshot_DropsAdaptersThatDisappeared()
+    {
+        var previous = new AdapterPrioritySnapshot(
+            "以太网 2",
+            new[] { Adapter("以太网 2", 25), Adapter("旧网卡", 60) },
+            DateTimeOffset.Now);
+        var states = new[] { Adapter("以太网 2", 10) };
+
+        AdapterPrioritySnapshot snapshot = AdapterPriorityPlanner.CreateSnapshot(
+            "以太网 2", states, Array.Empty<AdapterRouteState>(), previous, DateTimeOffset.Now);
+
+        Assert.AreEqual(1, snapshot.Adapters.Length, "系统里已经没有的网卡不能进新快照，否则恢复时会报「都已不存在」");
+        Assert.AreEqual(25, snapshot.Adapters[0].Ipv4Metric);
+    }
+
+    [TestMethod]
     public void SnapshotStore_SaveLoadDeleteRoundTrips()
     {
         using var dir = new TempDirectory();
@@ -192,7 +400,12 @@ public sealed class AdapterPriorityPlannerTests
         var snapshot = new AdapterPrioritySnapshot(
             "以太网 2",
             new[] { Adapter("以太网 2", 25, ipv6: 30), Adapter("WLAN", 35) },
-            appliedAt);
+            appliedAt,
+            new[]
+            {
+                new AdapterRouteState("以太网 2", "10.31.126.19", 25),
+                new AdapterRouteState("WLAN", "10.48.164.237", 0),
+            });
 
         Assert.IsFalse(store.Exists);
         store.Save(snapshot);
@@ -205,10 +418,38 @@ public sealed class AdapterPriorityPlannerTests
         Assert.AreEqual(2, loaded.Adapters.Length);
         Assert.AreEqual(25, loaded.Adapters.Single(a => a.Name == "以太网 2").Ipv4Metric);
         Assert.AreEqual(30, loaded.Adapters.Single(a => a.Name == "以太网 2").Ipv6Metric);
+        Assert.AreEqual(2, loaded.RoutesOrEmpty.Length, "默认路由跃点也要进恢复记录，否则恢复不完整");
+        Assert.AreEqual(25, loaded.RoutesOrEmpty.Single(route => route.AdapterName == "以太网 2").Metric);
+        Assert.AreEqual("10.48.164.237", loaded.RoutesOrEmpty.Single(route => route.AdapterName == "WLAN").NextHop);
 
         store.Delete();
         Assert.IsFalse(store.Exists);
         Assert.IsNull(store.Load());
+    }
+
+    [TestMethod]
+    public void SnapshotStore_LoadToleratesLegacyFileWithoutRoutes()
+    {
+        using var dir = new TempDirectory();
+        string path = dir.File(AdapterPrioritySnapshotStore.FileName);
+        // 旧版本（只记接口跃点）写下的文件：没有 routes 字段，必须仍能读出来只恢复接口跃点
+        File.WriteAllText(path, """
+        {
+          "preferredName": "以太网 2",
+          "adapters": [
+            { "name": "以太网 2", "ipv4Metric": 25, "ipv6Metric": 30, "connected": true },
+            { "name": "WLAN", "ipv4Metric": 35, "ipv6Metric": -1, "connected": true }
+          ],
+          "appliedAt": "2026-10-17T23:50:12+08:00"
+        }
+        """);
+
+        AdapterPrioritySnapshot? loaded = new AdapterPrioritySnapshotStore(path).Load();
+
+        Assert.IsNotNull(loaded);
+        Assert.AreEqual(2, loaded!.Adapters.Length);
+        Assert.IsNull(loaded.Routes, "旧文件没有 routes，应读成 null 而不是崩溃");
+        Assert.AreEqual(0, loaded.RoutesOrEmpty.Length);
     }
 
     [TestMethod]
