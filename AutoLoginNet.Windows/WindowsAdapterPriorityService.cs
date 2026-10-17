@@ -56,6 +56,16 @@ public sealed partial class WindowsAdapterPriorityService : IAdapterPriorityServ
     /// <summary>日志分类，与界面「网络」页一致。</summary>
     private const string LogCategory = "网络";
 
+    /// <summary>
+    /// 清空系统「目标缓存」（destination cache）的参数。Windows 会为每条用过的目标记住
+    /// 下一跳与出接口；只改跃点不清缓存时，缓存里的旧条目仍按旧网卡选路，
+    /// 表现就是「跃点改了，新连接还是从旧网卡出去」，要等缓存自己过期才恢复。
+    /// </summary>
+    private static readonly string[] FlushDestinationCacheArguments =
+    {
+        "interface", "ipv4", "delete", "destinationcache",
+    };
+
     private readonly ILogService _log;
     private readonly AdapterPrioritySnapshotStore _store;
     private readonly Func<string, IReadOnlyList<string>, CancellationToken, Task<ProcessOutcome>> _runAsync;
@@ -380,6 +390,7 @@ public sealed partial class WindowsAdapterPriorityService : IAdapterPriorityServ
             $"默认路由跃点 {AdapterPriorityPlanner.SecondaryRouteMetric}，" +
             $"共调整 {plan.Changes.Length} 张网卡、{routePlan.Changes.Length} 条默认路由（可随时恢复）";
         _log.Info(done, LogCategory);
+        await TryFlushDestinationCacheAsync(cancellationToken).ConfigureAwait(false);
         return AdapterPriorityOutcome.Done(done, plan.Changes);
     }
 
@@ -492,6 +503,7 @@ public sealed partial class WindowsAdapterPriorityService : IAdapterPriorityServ
             $"已恢复 {plan.Changes.Length} 张网卡的原始 IPv4 跃点{routeText}" +
             $"（首选网卡「{snapshot.PreferredName}」），系统恢复自动选路";
         _log.Info(done, LogCategory);
+        await TryFlushDestinationCacheAsync(cancellationToken).ConfigureAwait(false);
         return AdapterPriorityOutcome.Done(done, plan.Changes);
     }
 
@@ -870,6 +882,35 @@ public sealed partial class WindowsAdapterPriorityService : IAdapterPriorityServ
         {
             error = ex.Message;
             return false;
+        }
+    }
+
+    /// <summary>
+    /// 清空系统目标缓存，让新连接立刻按刚改好的跃点选路。
+    /// <para>
+    /// 这一步是「尽力而为」：失败只记警告，不影响「跃点已改好」的结论——
+    /// 缓存条目会随时间过期，最坏情况只是新连接晚一点才走新网卡。
+    /// 已经建立的连接不会迁移，需要重启对应软件才会换路径。
+    /// </para>
+    /// </summary>
+    private async Task TryFlushDestinationCacheAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            ProcessOutcome outcome = await _runAsync(NetshFileName, FlushDestinationCacheArguments, cancellationToken)
+                .ConfigureAwait(false);
+            if (outcome.Succeeded)
+            {
+                _log.Info("已清空系统目标缓存，新连接会立即按新跃点选路（已建立的连接不受影响，需重启对应软件）", LogCategory);
+            }
+            else
+            {
+                _log.Warn($"清空系统目标缓存失败（不影响跃点设置）：{FirstLine(outcome.StdErr)}", LogCategory);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Warn($"清空系统目标缓存失败（不影响跃点设置）：{ex.Message}", LogCategory);
         }
     }
 

@@ -26,6 +26,8 @@ public sealed class AdapterPriorityServiceTests
     private const string ShowIpv4 = "interface ipv4 show interfaces";
     private const string ShowIpv6 = "interface ipv6 show interfaces";
     private const string ShowRoute = "interface ipv4 show route";
+    private const string FlushDestinationCache = "interface ipv4 delete destinationcache";
+    private const string FlushDestinationCacheLog = "已清空系统目标缓存";
 
     // ===================== 解析器 =====================
 
@@ -389,6 +391,60 @@ public sealed class AdapterPriorityServiceTests
         Assert.AreEqual(25, snapshot.RoutesOrEmpty.Single(r => r.AdapterName == "以太网 2").Metric);
         Assert.AreEqual(35, snapshot.RoutesOrEmpty.Single(r => r.AdapterName == "WLAN").Metric);
         Assert.AreEqual(5000, snapshot.RoutesOrEmpty.Single(r => r.AdapterName == "vEthernet (Default Switch)").Metric);
+    }
+
+    // ===================== 目标缓存（点完立刻生效）=====================
+
+    [TestMethod]
+    public async Task ApplyPreferred_ClearsDestinationCacheSoNewConnectionsUseItImmediately()
+    {
+        using var fixture = new ServiceFixture();
+        fixture.Netsh.With("以太网 2", 25).With("WLAN", 35);
+
+        AdapterPriorityOutcome outcome = await fixture.Service.ApplyPreferredAsync("以太网 2");
+
+        Assert.IsTrue(outcome.Success, outcome.Message);
+        CollectionAssert.Contains(
+            fixture.Netsh.Commands,
+            FlushDestinationCache,
+            "改完跃点要清目标缓存，否则旧缓存里的下一跳会让新连接继续走原网卡");
+        Assert.IsTrue(
+            fixture.Log.Contains(FlushDestinationCacheLog, LogLevel.Info),
+            "清缓存成功要留一条日志，用户才知道这次为什么立刻生效");
+    }
+
+    [TestMethod]
+    public async Task Restore_ClearsDestinationCacheSoNewConnectionsUseItImmediately()
+    {
+        using var fixture = new ServiceFixture();
+        fixture.Netsh
+            .With("以太网 2", AdapterPriorityPlanner.PreferredMetric)
+            .With("WLAN", AdapterPriorityPlanner.SecondaryMetric);
+        fixture.Store.Save(Snapshot("以太网 2", ("以太网 2", 25), ("WLAN", 35)));
+
+        AdapterPriorityOutcome outcome = await fixture.Service.RestoreAsync();
+
+        Assert.IsTrue(outcome.Success, outcome.Message);
+        CollectionAssert.Contains(
+            fixture.Netsh.Commands,
+            FlushDestinationCache,
+            "恢复原跃点后同样要清缓存，让新连接回到系统自动选路");
+    }
+
+    [TestMethod]
+    public async Task ApplyPreferred_StillSucceedsWhenDestinationCacheCannotBeCleared()
+    {
+        using var fixture = new ServiceFixture();
+        fixture.Netsh.With("以太网 2", 25).With("WLAN", 35);
+        fixture.Netsh.DestinationCacheFails = true;
+
+        AdapterPriorityOutcome outcome = await fixture.Service.ApplyPreferredAsync("以太网 2");
+
+        Assert.IsTrue(outcome.Success, "清缓存只是锦上添花，失败不能把已经改好的跃点算成失败");
+        Assert.AreEqual(10, fixture.Netsh.MetricOf("以太网 2"));
+        Assert.IsTrue(
+            fixture.Log.Contains("清空系统目标缓存失败", LogLevel.Warning),
+            "失败要留警告，方便排查「为什么这次还要等一会儿才生效」");
     }
 
     [TestMethod]
@@ -969,6 +1025,9 @@ public sealed class AdapterPriorityServiceTests
 
         public bool RouteShowFails { get; set; }
 
+        /// <summary>返回 true 表示清空目标缓存以非 0 退出码失败（模拟不带管理员令牌）。</summary>
+        public bool DestinationCacheFails { get; set; }
+
         /// <summary>返回 true 表示这次 set interface 以非 0 退出码失败。</summary>
         public Func<string, int, bool>? SetFails { get; set; }
 
@@ -1078,6 +1137,13 @@ public sealed class AdapterPriorityServiceTests
                 return Task.FromResult(RouteShowFails
                     ? new ProcessOutcome(1, string.Empty, "请求的操作需要提升。")
                     : new ProcessOutcome(0, RenderRouteTable(), string.Empty));
+            }
+
+            if (command == FlushDestinationCache)
+            {
+                return Task.FromResult(DestinationCacheFails
+                    ? new ProcessOutcome(1, string.Empty, "请求的操作需要提升(作为管理员运行)。")
+                    : new ProcessOutcome(0, string.Empty, string.Empty));
             }
 
             if (args.Length == 6

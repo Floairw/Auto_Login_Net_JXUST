@@ -5,6 +5,30 @@ v2.0 是一次彻底重构，v1.x 的历史记录保留在文件末尾。
 
 ---
 
+## 2026-10-18 — 跃点改完立刻生效：清空系统目标缓存
+
+**用户问「如何让跃点数的修改对现有软件生效？」——真机复现发现根因在 Windows 目标缓存（destination cache），
+不是跃点没改对。**
+
+- **真机现象**：手机 USB 共享恢复后（网卡从「以太网 2」变成「以太网 3」），
+  `Get-NetRoute 0.0.0.0/0` 显示以太网 3 有效跃点 25、WLAN 9035，
+  `Find-NetRoute -RemoteIPAddress 8.8.8.8` 已返回以太网 3（说明排序生效了），
+  但 `Test-NetConnection 1.1.1.1 -Port 443` 的 SourceAddress 仍是 WLAN 的 10.99.233.207；
+  `netsh interface ipv4 show destinationcache` 里 WLAN 接口下的 8.8.8.8 / 1.1.1.1 条目
+  下一跳仍是 WLAN 网关——**旧下一跳被目标缓存钉住了**。
+- **结论**：跃点改动对**新建连接**立即生效；已建立的连接不会迁移；
+  目标缓存可以手动清（`netsh interface ipv4 delete destinationcache`，需管理员），
+  不清也会随条目过期自行恢复。
+- **修复**：`WindowsAdapterPriorityService` 在 apply/restore **成功后**调用
+  `TryFlushDestinationCacheAsync`（`netsh interface ipv4 delete destinationcache`），
+  把缓存里的旧下一跳清掉，点完按钮后新连接立刻走新网卡；这一步是「尽力而为」，
+  失败只记 `Warning`「清空系统目标缓存失败（不影响跃点设置）」，不影响「跃点已改好」的结论。
+- **测试**：新增 3 个用例（apply 后清缓存、restore 后清缓存、清缓存失败仍算成功）；
+  假 netsh 增加 `DestinationCacheFails` 开关；全量 **274/274** 通过（原 271 + 3）。
+- **界面**：网络工具页的说明补一句「点完会顺带清空系统目标缓存，新建的连接立即按新跃点选路；
+  已经建立的连接不会迁移，需要重启对应软件才会换路径。」
+- **重启后仍需重新点一次**：默认路由跃点只写到 `store=active`，重启由系统重建。
+
 ## 2026-10-18 — 修复：中文系统上「读取不到系统默认路由」
 
 **上一节的功能一上真机就失败：用户点「设为系统首选网卡」，弹窗报「读取不到系统默认路由，无法设置系统首选网卡」，
