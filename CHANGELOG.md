@@ -5,6 +5,38 @@ v2.0 是一次彻底重构，v1.x 的历史记录保留在文件末尾。
 
 ---
 
+## 2026-10-17 — 自启常驻托盘、关闭行为可选、上网网卡可切换、注销修复
+
+**四件事一起改：开机自启不再「闪一下就走」、关闭按钮可以选「收进托盘」、认证与 DNS 用哪张网卡可手动指定、自启登录后注销按钮不再点不动。**
+
+- **开机自启 / 最小化（替代原「登录成功后最小化」）**：删掉 `UiSettings.MinimizeAfterLogin`、`SettingsViewModel.MinimizeAfterLogin`、
+  设置页对应复选框和首页登录成功后的 `MinimizeIfRequested()`——这个开关语义一直别扭（它管的是登录成功、而不是开机自启）。
+  换成两项更明确的设置：`UiSettings.StartMinimizedToTray`（开关在首页「开机自启」卡片里，勾选后自启只在托盘中完成登录）
+  与 `UiSettings.CloseToTray`（设置页「外观」卡片）。
+- **`--autostart` 从「静默登录后退出」改为「静默登录后常驻」**：`App.RunAutoStartWithInterface` 完成静默登录后
+  `MarkStartupLoginCompleted(exitCode == 0)`，再按 `StartMinimizedToTray` 用 `new MainWindow(enableTray: true, startHidden)`
+  常驻；不再 `Environment.Exit`。这样托盘入口始终可用，用户随时能注销或切换上网网卡，不必重启程序重新检测。
+  `AppServices.StartupLoginSucceeded` + `DashboardViewModel.ApplyStartupLoginOutcome` 把自启结果回填成「已自动登录」，
+  同时 `TryClaimStartupAutoLogin()` 拦掉界面上的第二次登录。
+- **关闭主窗口行为可选（`UiSettings.CloseToTray`，默认 false）**：`MainWindow` 订阅 `AppWindow.Closing`，
+  勾选时 `args.Cancel = true` 后走 `HideToTray()`；`ExitFromTray` 先置 `_exiting` 避免被自己拦住。
+  托盘图标没加成功（`IsAvailable == false`）时照常退出——否则关闭按钮会把窗口藏起来又点不回来。
+- **上网网卡手动指定**：`INetworkAdapterResolver` 增加同步的 `ListAdapters()`（枚举内存数据，与路由表无关），
+  `WindowsNetworkAdapterResolver` 抽出 `Describe(NetworkInterface)` 复用给 `ResolveByGateway`；
+  新增 `AutoLoginNet.App\Infrastructure\AdapterSwitcher.cs` 统一「列网卡 / 存偏好 / 按名解析（找不到回退自动并记日志）」。
+  `UiSettings.NetworkAdapterName` 存**网卡名**而不是索引（索引会随插拔/重启变化）。界面：网络工具页 DNS 卡新增「上网网卡」下拉框，
+  托盘右键菜单新增「上网网卡 ▸」子菜单（`MF_POPUP` + `CheckMenuRadioItem` 单选勾选，第一项「自动选择」）。
+  `--apply-dns` 支持 `--adapter-name`：提权子进程按名字解析目标网卡，保证改的就是界面上选中的那张，而不是重新按路由猜一张。
+- **修复「自启登录后打开界面无法注销」**：`ConnectivityViewModel.MarkOnline()` 原先在没有快照时直接 return（自启静默登录不经过界面检测，
+  快照一直是 null），导致 `IsOnline` 恒为 false、注销按钮始终禁用。现在无快照时合成一份在线快照；
+  `DashboardViewModel.CanLogout` 放宽为 `!IsBusy && (IsOnline || !HasResult)`——状态未知也允许尝试，
+  服务器对未在线会话只会返回 NotOnline，无副作用。
+- 验证：App / Tests 工程编译 0 警告 0 错误；MSTest（EnableMSTestRunner 方式跑）200/200 通过；
+  实机验证了自启隐藏进托盘、托盘左键/双击还原、`WM_CLOSE` 收进托盘、托盘菜单「上网网卡 ▸」、网卡下拉列出
+  「以太网 / WLAN / vEthernet」并把 `networkAdapterName` 落盘、仪表盘显示「已自动登录」且注销按钮可用。
+
+---
+
 ## 2026-10-17 — 最小化收进系统托盘
 
 **主窗口「最小化」不再缩进任务栏，而是收进系统托盘。** 这是常驻类工具最省心的用法：登录完成后窗口不必占着
@@ -20,7 +52,7 @@ v2.0 是一次彻底重构，v1.x 的历史记录保留在文件末尾。
   子类化没生效时由 `AppWindow.Changed` 感知到最小化后兜底隐藏。**托盘图标没加成功时自动退回普通最小化**，
   避免出现「窗口藏起来又点不回来」。关闭主窗口仍是退出程序（`Closed` 事件里移除托盘图标）。
 - **开机自启路径（`--autostart` 静默登录）用 `new MainWindow(enableTray: false)`**：那条路径窗口只闪一下，
-  留个托盘图标反而是死图标。
+  留个托盘图标反而是死图标。（已被同日后续条目取代：自启现在登录后常驻，按「开机自启时最小化到系统托盘」决定只留托盘还是显示窗口。）
 - 设置页「登录成功后最小化窗口」文案改为「登录成功后最小化到系统托盘」，`UiSettings.MinimizeAfterLogin` 注释同步。
 - 已知环境限制：如果 exe 被打上低完整性标签（某些沙箱目录会继承 Low IL），进程无法与资源管理器通信，
   `Shell_NotifyIconW` 会返回失败且 `GetLastWin32Error()` 为 0——此时按上面的规则退化为普通最小化，功能不受影响。
